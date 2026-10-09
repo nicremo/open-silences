@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -15,6 +15,8 @@
     .brand svg { color:var(--accent); flex-shrink:0; }
     .steps { display:flex; gap:18px; list-style:none; padding:0; margin:14px 0 0; color:var(--muted); font-size:12px; }
     .steps li { display:flex; gap:6px; align-items:center; }
+    .steps b { font-weight:inherit; }
+    .visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
     .steps span { display:inline-grid; place-items:center; width:20px; height:20px; border-radius:50%; border:1px solid var(--border); font-size:11px; }
     .steps [aria-current="step"] { color:var(--accent); }
     .steps [aria-current="step"] span { border-color:var(--accent); background:#263c36; }
@@ -94,60 +96,80 @@
     @media(max-width:320px) { header { padding:16px 14px 12px; } main { padding-left:14px; padding-right:14px; } footer { padding-left:14px; padding-right:14px; } .timing .number { width:92px; } .threshold-field { width:104px; } .steps { gap:10px; } .confirm-actions { flex-direction:column-reverse; } }
     @media(prefers-reduced-motion:reduce) { button { transition:none; } }
     @media(prefers-reduced-motion:no-preference) { .progress li { transition:border-color 160ms ease,color 160ms ease; } }
+      .top { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .lang { display:flex; align-items:center; gap:6px; color:var(--muted); }
+    .lang svg { flex-shrink:0; }
+    .lang select { min-width:0; max-width:none; min-height:30px; padding:3px 26px 3px 8px; font-size:12px; background-position:right 8px center; }
+    .languages .scope { align-items:center; }
+    .languages .scope strong { font-size:15px; }
+    #languageContinue { margin-top:8px; }
   </style>
 </head>
 <body>
   <div class="app">
     <header>
-      <div class="brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 10v4m4-8v12m4-15v18m4-15v12m4-8v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Open Silences</div>
-      <ol class="steps" aria-label="Ablauf"><li id="stepOne" aria-current="step"><span>1</span>Bereich</li><li id="stepTwo"><span>2</span>Einstellungen</li></ol>
+      <div class="top">
+        <div class="brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 10v4m4-8v12m4-15v18m4-15v12m4-8v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Open Silences</div>
+        <label class="lang" id="languageControl" hidden><svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M3 12h18M12 3c2.5 2.6 3.7 5.6 3.7 9s-1.2 6.4-3.7 9c-2.5-2.6-3.7-5.6-3.7-9S9.5 5.6 12 3z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><select id="language" data-i18n-aria-label="language.label" aria-label="Language"><option value="en">English</option><option value="es">Español</option><option value="de">Deutsch</option></select></label>
+      </div>
+      <ol class="steps" id="steps" data-i18n-aria-label="steps.label" aria-label="Steps" hidden><li id="stepOne" aria-current="step"><span>1</span><b data-i18n="steps.range">Range</b></li><li id="stepTwo"><span>2</span><b data-i18n="steps.settings">Settings</b></li></ol>
     </header>
     <main>
-      <section id="sections" aria-labelledby="sectionTitle">
-        <h1 id="sectionTitle">Was möchtest du schneiden?</h1>
-        <p class="muted">Wähle einen Bereich und die Spuren mit deiner Stimme.</p>
-        <div class="sequence"><strong id="sequenceName">Sequenz wird gelesen ...</strong><div id="sequenceMeta" class="meta"></div></div>
-        <fieldset id="scope"><legend>Bereich der Timeline</legend>
-          <label class="scope"><input type="radio" name="scope" value="entire" checked/><span><strong>Ganze Timeline</strong><small>Die komplette aktive Sequenz.</small></span></label>
-          <label class="scope"><input type="radio" name="scope" value="inout"/><span><strong>In- und Out-Punkte</strong><small>Den Bereich mit I und O in Premiere markieren.</small></span></label>
-          <label class="scope"><input type="radio" name="scope" value="selected"/><span><strong>Ausgewählte Clips</strong><small>Nur die markierten Abschnitte bearbeiten.</small></span></label>
+      <section id="languageScreen" aria-labelledby="languageTitle" hidden>
+        <h1 id="languageTitle" data-i18n="language.title">Choose your language</h1>
+        <p class="muted" data-i18n="language.text">You can change it any time at the top of the panel.</p>
+        <fieldset class="languages" id="languageChoices"><legend class="visually-hidden" data-i18n="language.label">Language</legend>
+          <label class="scope"><input type="radio" name="languageChoice" value="en"/><span><strong>English</strong></span></label>
+          <label class="scope"><input type="radio" name="languageChoice" value="es"/><span><strong>Español</strong></span></label>
+          <label class="scope"><input type="radio" name="languageChoice" value="de"/><span><strong>Deutsch</strong></span></label>
         </fieldset>
-        <fieldset><div class="topline"><legend>Audiospuren mit Sprache</legend><button class="quiet" id="refresh" type="button">Aktualisieren</button></div><div id="tracks"></div><p class="help">Diese Spuren bestimmen, wo gesprochen wird. Beim Schneiden bleiben Bild und Ton zusammen.</p></fieldset>
+        <button id="languageContinue" type="button" class="primary" data-i18n="language.continue">Continue</button>
+      </section>
+      <section id="sections" aria-labelledby="sectionTitle" hidden>
+        <h1 id="sectionTitle" data-i18n="range.title">What do you want to cut?</h1>
+        <p class="muted" data-i18n="range.text">Choose a range and the tracks with your voice.</p>
+        <div class="sequence"><strong id="sequenceName" data-i18n="sequence.reading">Reading sequence ...</strong><div id="sequenceMeta" class="meta"></div></div>
+        <fieldset id="scope"><legend data-i18n="scope.legend">Timeline range</legend>
+          <label class="scope"><input type="radio" name="scope" value="entire" checked/><span><strong data-i18n="scope.entire">Entire timeline</strong><small data-i18n="scope.entireHelp">The whole active sequence.</small></span></label>
+          <label class="scope"><input type="radio" name="scope" value="inout"/><span><strong data-i18n="scope.inout">In and out points</strong><small data-i18n="scope.inoutHelp">Mark the range with I and O in Premiere.</small></span></label>
+          <label class="scope"><input type="radio" name="scope" value="selected"/><span><strong data-i18n="scope.selected">Selected clips</strong><small data-i18n="scope.selectedHelp">Only the selected sections.</small></span></label>
+        </fieldset>
+        <fieldset><div class="topline"><legend data-i18n="tracks.legend">Audio tracks with speech</legend><button class="quiet" id="refresh" type="button" data-i18n="tracks.refresh">Refresh</button></div><div id="tracks"></div><p class="help" data-i18n="tracks.help">These tracks decide where someone speaks. Picture and sound stay together when cutting.</p></fieldset>
       </section>
       <section id="settings" aria-labelledby="settingsTitle" hidden>
-        <button class="back" id="back" type="button">‹ Bereich ändern</button>
-        <h1 id="settingsTitle">Stillen entfernen</h1>
+        <button class="back" id="back" type="button" data-i18n="settings.back">‹ Change range</button>
+        <h1 id="settingsTitle" data-i18n="settings.title">Remove silences</h1>
         <p class="help" id="scopeSummary"></p>
         <form id="settingsForm">
-          <div class="noise-heading"><label for="threshold">Noise Floor</label><div class="number threshold-field"><input id="threshold" type="number" min="-60" max="0" step="0.1" value="-45" required/><span>dB</span></div></div>
-          <input id="thresholdSlider" type="range" min="-60" max="0" step="0.1" value="-45" aria-label="Noise Floor in Dezibel"/>
+          <div class="noise-heading"><label for="threshold" data-i18n="threshold.label">Noise floor</label><div class="number threshold-field"><input id="threshold" type="number" min="-60" max="0" step="0.1" value="-45" required/><span>dB</span></div></div>
+          <input id="thresholdSlider" type="range" min="-60" max="0" step="0.1" value="-45" data-i18n-aria-label="threshold.aria" aria-label="Noise floor in decibels"/>
           <div class="range-labels"><span>-60 dB</span><span>0 dB</span></div>
-          <p class="help">Audio unter diesem Pegel gilt als Stille. Typisch für Sprache: -50 bis -40 dB.</p>
-          <button id="estimate" type="button" class="estimate">Pegel automatisch schätzen</button>
-          <p class="help">Berechnet lokal aus den gewählten Audiospuren.</p>
-          <div class="preset"><label for="preset">Schnitttempo</label><select id="preset"><option value="mine">Standard</option><option value="calm">Ruhig</option><option value="measured">Gemächlich</option><option value="paced">Flüssig</option><option value="energetic">Energisch</option><option value="jumpy">Sehr knapp</option><option value="custom">Eigene Werte</option></select></div>
+          <p class="help" data-i18n="threshold.help">Audio below this level counts as silence. Typical for speech: -50 to -40 dB.</p>
+          <button id="estimate" type="button" class="estimate" data-i18n="estimate.button">Estimate level automatically</button>
+          <p class="help" data-i18n="estimate.help">Calculated locally from the selected audio tracks.</p>
+          <div class="preset"><label for="preset" data-i18n="preset.label">Pacing</label><select id="preset"><option value="mine" data-i18n="preset.mine">Standard</option><option value="calm" data-i18n="preset.calm">Calm</option><option value="measured" data-i18n="preset.measured">Relaxed</option><option value="paced" data-i18n="preset.paced">Fluid</option><option value="energetic" data-i18n="preset.energetic">Energetic</option><option value="jumpy" data-i18n="preset.jumpy">Very tight</option><option value="custom" data-i18n="preset.custom">Custom</option></select></div>
           <div class="timings">
-            <div class="timing"><div><label for="minPause">Stillen ab</label><p class="help">Kürzere Pausen bleiben erhalten.</p></div><div class="number"><input id="minPause" type="number" min="0" max="10000" step="10" value="160" required/><span>ms</span></div></div>
-            <div class="timing"><div><label for="minSpeech">Sprache ab</label><p class="help">Kürzere, leise Geräusche zählen nicht als Sprache. Kurze laute Wörter bleiben.</p></div><div class="number"><input id="minSpeech" type="number" min="0" max="10000" step="10" value="160" required/><span>ms</span></div></div>
-            <div class="timing"><div><label for="leadIn">Luft vor Sprache</label><p class="help">Schützt den Anfang deiner Wörter.</p></div><div class="number"><input id="leadIn" type="number" min="0" max="10000" step="10" value="160" required/><span>ms</span></div></div>
-            <div class="timing"><div><label for="tail">Luft nach Sprache</label><p class="help">Lässt Wörter natürlich ausklingen.</p></div><div class="number"><input id="tail" type="number" min="0" max="10000" step="10" value="160" required/><span>ms</span></div></div>
+            <div class="timing"><div><label for="minPause" data-i18n="timing.minPause">Silence from</label><p class="help" data-i18n="timing.minPauseHelp">Shorter pauses stay.</p></div><div class="number"><input id="minPause" type="number" min="0" max="10000" step="10" value="160" required/><span>ms</span></div></div>
+            <div class="timing"><div><label for="minSpeech" data-i18n="timing.minSpeech">Speech from</label><p class="help" data-i18n="timing.minSpeechHelp">Shorter quiet sounds do not count as speech. Short loud words stay.</p></div><div class="number"><input id="minSpeech" type="number" min="0" max="10000" step="10" value="160" required/><span>ms</span></div></div>
+            <div class="timing"><div><label for="leadIn" data-i18n="timing.leadIn">Air before speech</label><p class="help" data-i18n="timing.leadInHelp">Protects the start of your words.</p></div><div class="number"><input id="leadIn" type="number" min="0" max="10000" step="10" value="160" required/><span>ms</span></div></div>
+            <div class="timing"><div><label for="tail" data-i18n="timing.tail">Air after speech</label><p class="help" data-i18n="timing.tailHelp">Lets words fade out naturally.</p></div><div class="number"><input id="tail" type="number" min="0" max="10000" step="10" value="160" required/><span>ms</span></div></div>
           </div>
         </form>
         <div id="backupNotice" hidden></div>
       </section>
     </main>
-    <footer>
-      <ol id="progress" class="progress" aria-label="Fortschritt" hidden></ol>
+    <footer id="footer" hidden>
+      <ol id="progress" class="progress" data-i18n-aria-label="progress.label" aria-label="Progress" hidden></ol>
       <div id="status" role="status" aria-live="polite" hidden></div>
-      <p id="blockingHint" class="hint" hidden>Premiere reagiert in diesem Schritt kurz nicht. Das ist normal.</p>
+      <p id="blockingHint" class="hint" data-i18n="hint.blocking" hidden>Premiere does not respond for a moment during this step. That is normal.</p>
       <div id="confirm" class="confirm" role="group" aria-labelledby="confirmText" hidden>
         <p id="confirmText"></p>
-        <div class="confirm-actions"><button id="confirmCancel" type="button" data-keep-enabled="true">Nicht schneiden</button><button id="confirmCut" type="button" class="primary" data-keep-enabled="true">Jetzt schneiden</button></div>
+        <div class="confirm-actions"><button id="confirmCancel" type="button" data-keep-enabled="true" data-i18n="confirm.cancel">Don't cut</button><button id="confirmCut" type="button" class="primary" data-keep-enabled="true" data-i18n="confirm.cut">Cut now</button></div>
       </div>
       <div id="result" class="result" role="status" aria-live="polite" hidden><strong id="resultValue"></strong><span id="resultDetail"></span></div>
-      <p id="safety" class="safety" hidden>Vor dem Schnitt wird automatisch ein Backup angelegt.</p>
-      <button id="primary" type="button" class="primary" disabled>Weiter zu Einstellungen</button>
-      <button id="cancel" type="button" hidden>Analyse abbrechen</button>
+      <p id="safety" class="safety" data-i18n="safety" hidden>A backup is created automatically before the cut.</p>
+      <button id="primary" type="button" class="primary" disabled>Continue to settings</button>
+      <button id="cancel" type="button" data-i18n="cancel" hidden>Cancel analysis</button>
     </footer>
   </div>
   <script src="./js/CSInterface.js"></script>

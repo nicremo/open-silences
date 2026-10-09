@@ -50,6 +50,7 @@ test('the package contains every required file', () => {
     'js/core.js',
     'js/controller.js',
     'js/workflow.js',
+    'js/i18n.js',
     'js/CSInterface.js',
     'js/CSInterface.NOTICE.md',
     'jsx/silences.jsx',
@@ -108,7 +109,7 @@ test('the package carries only runtime files', () => {
 
 test('the packaged modules parse and the engine reports its version', () => {
   ensureBuilt();
-  for (const relative of ['js/main.js', 'js/core.js', 'js/controller.js', 'js/workflow.js']) {
+  for (const relative of ['js/main.js', 'js/core.js', 'js/controller.js', 'js/workflow.js', 'js/i18n.js']) {
     const path = join(packageRoot, relative);
     execFileSync(process.execPath, ['--check', path], { stdio: 'pipe' });
   }

@@ -1,13 +1,22 @@
 import {interpretHostReply, hostScriptFor} from './core.js';
-import {createWorkflow, DEFAULT_SETTINGS, PRESETS, TIMING_FIELDS, resolveSections, seconds, formatSeconds, formatClock, formatPercent} from './workflow.js';
+import {createWorkflow, DEFAULT_SETTINGS, PRESETS, TIMING_FIELDS, resolveSections, seconds} from './workflow.js';
+import {LANGUAGES, createTranslator, createFormat, resolveLanguage} from './i18n.js';
 const csInterface = new CSInterface();
 const ENGINE_RELATIVE_PATH = 'engine/silences-engine';
 const STDOUT_LIMIT_BYTES = 32 * 1024 * 1024;
 const STDERR_LIMIT_BYTES = 8192;
 const runtime = {activeChild:null, cancelRequested:false};
 const $ = id => document.getElementById(id);
+const LANGUAGE_KEY = 'open-silences-language';
+let t = createTranslator('en'), fmt = createFormat('en');
+// A status given as a function is rendered again when the language changes.
+let lastStatus = {message:'', kind:''};
 function log(message, kind) { status(message, kind === 'error' ? 'error' : ''); }
-function status(message, kind='') { $('status').hidden=!message; $('status').textContent=message; $('status').className=kind; }
+function status(message, kind='') {
+  lastStatus = {message, kind};
+  const text = typeof message === 'function' ? message() : message;
+  $('status').hidden=!text; $('status').textContent=text; $('status').className=kind;
+}
 function evalScript(script) {
   return new Promise(resolve => {
     csInterface.evalScript(script, resolve);
@@ -63,7 +72,7 @@ function runEngine(snapshot, { timeoutSeconds = 1800, estimate = false } = {}) {
   if (!fs.existsSync(enginePath)) {
     return Promise.resolve({
       ok: false,
-      error: `Engine nicht gefunden: ${enginePath}. Bitte den Installer im Workspace ausführen.`
+      error: t('engine.missing', {path:enginePath})
     });
   }
 
@@ -127,7 +136,7 @@ function runEngine(snapshot, { timeoutSeconds = 1800, estimate = false } = {}) {
       if (settled) {
         return;
       }
-      log('Zeitlimit erreicht, Engine wird beendet.', 'warn');
+      log(() => t('engine.timeout'), 'warn');
       cancelRun();
     }, (timeoutSeconds + 30) * 1000);
 
@@ -137,7 +146,7 @@ function runEngine(snapshot, { timeoutSeconds = 1800, estimate = false } = {}) {
         stdoutChunks.push(chunk);
         return;
       }
-      log('Die Engine hat zu viel ausgegeben, Lauf wird abgebrochen.', 'error');
+      log(() => t('engine.overflow'), 'error');
       cancelRun();
     });
     child.stderr.on('data', chunk => {
@@ -147,25 +156,25 @@ function runEngine(snapshot, { timeoutSeconds = 1800, estimate = false } = {}) {
         combined.length > STDERR_LIMIT_BYTES ? combined.subarray(combined.length - STDERR_LIMIT_BYTES) : combined;
     });
     child.on('error', error => {
-      finish({ ok: false, error: `Engine konnte nicht gestartet werden: ${error.message}` });
+      finish({ ok: false, error: t('engine.startFailed', {detail:error.message}) });
     });
     child.on('close', code => {
       if (stdoutBytes > STDOUT_LIMIT_BYTES) {
-        finish({ ok: false, error: 'Die Engine hat zu viel ausgegeben, Ergebnis verworfen.' });
+        finish({ ok: false, error: t('engine.overflowDiscarded') });
         return;
       }
       if (runtime.cancelRequested) {
-        finish({ ok: false, error: 'Lauf abgebrochen.' });
+        finish({ ok: false, error: t('engine.cancelled') });
         return;
       }
       if (code !== 0) {
-        finish({ ok: false, error: stderrTail.toString('utf8').trim() || `Engine beendet mit Code ${code}.` });
+        finish({ ok: false, error: stderrTail.toString('utf8').trim() || t('engine.exit', {code}) });
         return;
       }
       try {
         finish({ ok: true, envelope: JSON.parse(Buffer.concat(stdoutChunks).toString('utf8')) });
       } catch (error) {
-        finish({ ok: false, error: `Antwort der Engine nicht lesbar: ${error.message}` });
+        finish({ ok: false, error: t('engine.unreadable', {detail:error.message}) });
       }
     });
   });
@@ -178,7 +187,7 @@ function cancelEngine() {
     return;
   }
   runtime.cancelRequested = true;
-  log('Abbruch angefordert, Engine wird beendet.', 'warn');
+  log(() => t('engine.cancelRequested'), 'warn');
   try {
     child.stdin.end();
   } catch (error) {
@@ -198,6 +207,8 @@ function cancelEngine() {
 
 
 let sequence = null, step = 1, busy = false;
+// Rendered parts that depend on the language, kept so a switch can redraw them.
+let summaryParts = null, lastPreview = null, lastResult = null, lastPhase = null, lastBackup = null;
 const fields = ['threshold', ...TIMING_FIELDS];
 // Settings saved before version 3 used other field names. The label of each
 // field is unchanged, so values move to the field with the same label.
@@ -217,11 +228,11 @@ function saveSettings() {
   try { localStorage.setItem('open-silences-settings-v3',JSON.stringify(values)); } catch (_) {}
 }
 const PHASES = {full:['backup','audio','detect','verify','cut'], estimate:['audio','detect']};
-const PHASE_LABELS = {backup:'Backup', audio:'Audio', detect:'Erkennung', verify:'Prüfung', cut:'Schnitt'};
 // Premiere does not respond while it clones, renders or cuts.
 const BLOCKING_PHASES = new Set(['backup','audio','verify','cut']);
 let runKind = 'full';
 function showProgress(phase) {
+  lastPhase = phase;
   const order = PHASES[runKind];
   const position = order.indexOf(phase);
   $('progress').hidden = position < 0;
@@ -229,17 +240,20 @@ function showProgress(phase) {
   if (position < 0) return;
   $('progress').replaceChildren(...order.map((name, index) => {
     const item = document.createElement('li');
-    item.textContent = PHASE_LABELS[name];
+    item.textContent = t(`phase.${name}`);
     if (index < position) item.className = 'done';
     if (index === position) { item.className = 'active'; item.setAttribute('aria-current', 'step'); }
     return item;
   }));
 }
+function renderConfirm() {
+  if (!lastPreview) return;
+  $('confirmText').textContent = t.plural('confirm.text', lastPreview.cutCount, {seconds:fmt.seconds(lastPreview.removedSeconds), percent:fmt.percent(lastPreview.removedSeconds, lastPreview.rangeSeconds)});
+}
 function confirmCut(preview) {
   status('');
   $('blockingHint').hidden = true;
-  const noun = preview.cutCount === 1 ? 'Pause' : 'Pausen';
-  $('confirmText').textContent = `${preview.cutCount} ${noun} gefunden. ${formatSeconds(preview.removedSeconds)} werden entfernt, das sind ${formatPercent(preview.removedSeconds, preview.rangeSeconds)} des Bereichs.`;
+  lastPreview = preview; renderConfirm();
   // Only the two answers are offered: cancel would leave the question open and
   // the primary button would duplicate the cut action.
   $('cancel').hidden = true;
@@ -252,17 +266,23 @@ function confirmCut(preview) {
       $('primary').hidden = false;
       $('confirmCut').onclick = null;
       $('confirmCancel').onclick = null;
+      lastPreview = null;
       resolve(value);
     };
     $('confirmCut').onclick = () => answer(true);
     $('confirmCancel').onclick = () => answer(false);
   });
 }
+function renderResult() {
+  const summary = lastResult;
+  if (!summary) return;
+  const cut = summary.cutCount > 0 && !summary.declined;
+  $('resultValue').textContent = summary.declined ? t('result.declined') : cut ? t('result.removed', {seconds:fmt.seconds(summary.removedSeconds)}) : t('result.none');
+  $('resultDetail').textContent = cut ? t.plural('result.cuts', summary.cutCount, {name:summary.backupName}) : t('result.backup', {name:summary.backupName});
+}
 function showResult(summary) {
   status('');
-  const cut = summary.cutCount > 0 && !summary.declined;
-  $('resultValue').textContent = summary.declined ? 'Nichts geschnitten' : cut ? `${formatSeconds(summary.removedSeconds)} entfernt` : 'Keine Pausen gefunden';
-  $('resultDetail').textContent = cut ? `${summary.cutCount} Schnitte. Backup geprüft: ${summary.backupName}` : `Backup im Projekt: ${summary.backupName}`;
+  lastResult = summary; renderResult();
   $('result').hidden = false;
 }
 function updatePreset() {
@@ -274,11 +294,12 @@ function config() { return {
   analysisTracks:[...document.querySelectorAll('#tracks input:checked')].map(el=>({kind:'audio',index:Number(el.value)})),
   settings:Object.fromEntries(fields.map(field=>[field,$(field).value]))
 }; }
+function primaryText() { return busy ? t('primary.busy') : step===1 ? t('primary.next') : t('primary.run'); }
 function changeStep(next) {
   step=next; $('sections').hidden=next!==1; $('settings').hidden=next!==2;
   $('stepOne').removeAttribute('aria-current'); $('stepTwo').removeAttribute('aria-current');
   $(next===1?'stepOne':'stepTwo').setAttribute('aria-current','step');
-  $('primary').textContent=next===1?'Weiter zu Einstellungen':'Stillen entfernen';
+  $('primary').textContent=primaryText();
   $('safety').hidden=next===1;
   document.querySelector('main').scrollTop=0;
 }
@@ -289,17 +310,31 @@ function setBusy(running,text,cancellable,phase) {
     el.disabled=running || el.dataset.unavailable==='true' || (el.id==='primary'&&!sequence);
   }
   $('cancel').hidden=!running; $('cancel').disabled=!cancellable;
-  if (running) { $('result').hidden=true; showProgress(phase); status(text); $('primary').textContent='Wird verarbeitet ...'; }
-  else { $('progress').hidden=true; $('blockingHint').hidden=true; $('confirm').hidden=true; $('primary').hidden=false; $('primary').textContent=step===1?'Weiter zu Einstellungen':'Stillen entfernen'; }
+  if (running) { $('result').hidden=true; lastResult=null; showProgress(phase); status(text); $('primary').textContent=primaryText(); }
+  else { lastPhase=null; $('progress').hidden=true; $('blockingHint').hidden=true; $('confirm').hidden=true; $('primary').hidden=false; $('primary').textContent=primaryText(); }
 }
-const workflow=createWorkflow({host:callHost, engine:{run:runEngine, renderPath:()=>joinPath(evidenceDirectory(),'timeline.wav'), cancel:cancelEngine}, ui:{
+function renderBackup() { if (lastBackup) $('backupNotice').textContent=t('backup.notice', {name:lastBackup}); }
+const workflow=createWorkflow({host:callHost, engine:{run:runEngine, renderPath:()=>joinPath(evidenceDirectory(),'timeline.wav'), cancel:cancelEngine}, t:(key, vars)=>t(key, vars), ui:{
   busy:setBusy,
-  backup:name=>{ $('backupNotice').hidden=false; $('backupNotice').textContent=`Backup im Projekt: ${name}`; },
+  backup:name=>{ lastBackup=name; $('backupNotice').hidden=false; renderBackup(); },
   error:message=>status(message,'error'),
-  estimate:value=>{ $('threshold').value=String(value); $('thresholdSlider').value=String(value); saveSettings(); status(`Vorschlag: ${String(value).replace('.',',')} dB. Du kannst den Wert weiter anpassen.`,'success'); },
+  estimate:value=>{ $('threshold').value=String(value); $('thresholdSlider').value=String(value); saveSettings(); status(()=>t('estimate.result', {value:fmt.decimal(value)}),'success'); },
   confirm:confirmCut,
   complete:showResult
 }});
+function renderSequence() {
+  if (!sequence) { $('sequenceName').textContent=t('sequence.none'); $('sequenceMeta').textContent=t('sequence.open'); return; }
+  $('sequenceName').textContent=sequence.name;
+  $('sequenceMeta').textContent=`${fmt.clock(seconds(sequence.endTicks))} · ${sequence.fps.toFixed(2).replace('.', t.language==='en'?'.':',')} fps`;
+}
+function trackDetail(track) {
+  return track.muted ? t('tracks.muted') : track.locked ? t('tracks.locked') : (track.muted!==false||track.locked!==false) ? t('tracks.unreadable') : '';
+}
+function renderTracks() {
+  for (const label of document.querySelectorAll('#tracks .track')) label.querySelector('small').textContent=trackDetail(label._track);
+  if (sequence && !document.querySelector('#tracks .track')) $('tracks').textContent=t('tracks.empty');
+}
+let sequenceRead = false;
 async function refresh() {
   if (busy) return;
   $('primary').disabled=true;
@@ -307,26 +342,68 @@ async function refresh() {
   const previousId=sequence?.identity;
   try {
     sequence=await workflow.refresh();
-    $('sequenceName').textContent=sequence.name;
-    $('sequenceMeta').textContent=`${formatClock(seconds(sequence.endTicks))} · ${sequence.fps.toFixed(2).replace('.',',')} fps`;
+    sequenceRead=true;
+    renderSequence();
     $('tracks').replaceChildren();
-    const audio=sequence.tracks.filter(t=>t.kind==='audio'&&t.clips.length);
-    const first=audio.find(t=>t.muted===false&&t.locked===false)?.index;
+    const audio=sequence.tracks.filter(track=>track.kind==='audio'&&track.clips.length);
+    const first=audio.find(track=>track.muted===false&&track.locked===false)?.index;
     for (const track of audio) {
-      const label=document.createElement('label'); label.className='track';
+      const label=document.createElement('label'); label.className='track'; label._track=track;
       const checkbox=document.createElement('input'); checkbox.type='checkbox'; checkbox.value=String(track.index);
       const unavailable=track.muted!==false||track.locked!==false;
       checkbox.disabled=unavailable; checkbox.dataset.unavailable=String(unavailable);
       checkbox.checked=!unavailable&&(previousId===sequence.identity ? chosen.includes(track.index) : track.index===first);
       const name=document.createElement('span'); name.textContent=`A${track.index+1} · ${track.name}`;
-      const detail=document.createElement('small'); detail.textContent=track.muted ? 'Stumm' : track.locked ? 'Gesperrt' : unavailable ? 'Nicht lesbar' : '';
+      const detail=document.createElement('small'); detail.textContent=trackDetail(track);
       if (unavailable) label.classList.add('unavailable');
       label.append(checkbox,name,detail); $('tracks').append(label);
     }
-    if (!audio.length) $('tracks').textContent='Die Sequenz enthält keine Audiospuren mit Clips.';
+    if (!audio.length) $('tracks').textContent=t('tracks.empty');
     $('primary').disabled=false;
-  } catch(error) { sequence=null; $('sequenceName').textContent='Keine aktive Sequenz'; $('sequenceMeta').textContent='Öffne eine Timeline und klicke auf Aktualisieren.'; status(error.message,'error'); }
+  } catch(error) {
+    sequence=null; sequenceRead=true; renderSequence();
+    // The sequence card already says this in the chosen language.
+    if (!/^No active sequence/.test(error.message)) status(error.message,'error');
+  }
 }
+function renderScopeSummary() {
+  if (!summaryParts) return;
+  $('scopeSummary').textContent=`${t(`scope.${summaryParts.scope}`)} · ${fmt.clock(summaryParts.length)} · ${summaryParts.tracks}`;
+}
+
+/** Applies a language to every static text and redraws the dynamic ones. */
+function applyLanguage(code) {
+  t=createTranslator(resolveLanguage(code)); fmt=createFormat(t.language);
+  document.documentElement.lang=t.language;
+  for (const el of document.querySelectorAll('[data-i18n]')) el.textContent=t(el.dataset.i18n);
+  for (const el of document.querySelectorAll('[data-i18n-aria-label]')) el.setAttribute('aria-label', t(el.dataset.i18nAriaLabel));
+  $('language').value=t.language;
+  $('primary').textContent=primaryText();
+  if (sequenceRead) { renderSequence(); renderTracks(); } else $('sequenceName').textContent=t('sequence.reading');
+  renderScopeSummary(); renderConfirm(); renderResult(); renderBackup();
+  if (lastPhase) showProgress(lastPhase);
+  if (typeof lastStatus.message==='function') status(lastStatus.message, lastStatus.kind);
+}
+function storedLanguage() {
+  try { const value=localStorage.getItem(LANGUAGE_KEY); return LANGUAGES.some(language=>language.code===value) ? value : null; } catch (_) { return null; }
+}
+function storeLanguage(code) { try { localStorage.setItem(LANGUAGE_KEY, code); } catch (_) {} }
+function hostLocale() {
+  try { return csInterface.hostEnvironment?.appUILocale || navigator.language; } catch (_) { return navigator.language; }
+}
+function showApp() {
+  $('languageScreen').hidden=true; $('languageControl').hidden=false; $('steps').hidden=false; $('footer').hidden=false;
+  changeStep(step);
+}
+function showLanguageScreen(code) {
+  $('languageScreen').hidden=false; $('languageControl').hidden=true; $('steps').hidden=true; $('footer').hidden=true;
+  $('sections').hidden=true; $('settings').hidden=true;
+  for (const input of document.querySelectorAll('input[name="languageChoice"]')) input.checked=input.value===code;
+  markChoices('#languageChoices');
+  document.querySelector('input[name="languageChoice"]:checked')?.focus();
+}
+function markChoices(selector) { for (const label of document.querySelectorAll(`${selector} .scope`)) label.classList.toggle('chosen',label.querySelector('input').checked); }
+
 $('primary').addEventListener('click',async()=>{
   if (busy) return;
   status('');
@@ -334,27 +411,34 @@ $('primary').addEventListener('click',async()=>{
     try {
       const identity=sequence?.identity;
       const fresh=await workflow.refresh();
-      if (fresh.identity!==identity) { await refresh(); throw Error('Die aktive Sequenz hat gewechselt. Bitte Auswahl prüfen.'); }
+      if (fresh.identity!==identity) { await refresh(); throw Error(t('error.sequenceSwitched')); }
       sequence=fresh;
-      const selection=config(); const ranges=resolveSections(sequence,selection.scope);
-      if (!selection.analysisTracks.length) throw Error('Wähle mindestens eine hörbare Audiospur mit Sprache.');
+      const selection=config(); const ranges=resolveSections(sequence,selection.scope,t);
+      if (!selection.analysisTracks.length) throw Error(t('error.chooseTrack'));
       const length=ranges.reduce((sum,r)=>sum+seconds((BigInt(r.endTicks)-BigInt(r.startTicks)).toString()),0);
-      const labels={entire:'Ganze Timeline',inout:'In- und Out-Punkte',selected:'Ausgewählte Clips'};
-      $('scopeSummary').textContent=`${labels[selection.scope]} · ${formatClock(length)} · ${selection.analysisTracks.map(t=>`A${t.index+1}`).join(', ')}`;
+      summaryParts={scope:selection.scope, length, tracks:selection.analysisTracks.map(track=>`A${track.index+1}`).join(', ')};
+      renderScopeSummary();
       changeStep(2); $('settingsTitle').tabIndex=-1; $('settingsTitle').focus();
     } catch(error) { status(error.message,'error'); }
   } else if ($('settingsForm').reportValidity()) { saveSettings(); runKind='full'; await workflow.run(config()); }
 });
 $('estimate').addEventListener('click',()=>{ if ($('settingsForm').reportValidity()) { runKind='estimate'; workflow.run(config(),true); } });
 $('refresh').addEventListener('click',()=>{status('');refresh();});
-$('back').addEventListener('click',()=>{if(!busy){$('result').hidden=true;changeStep(1);status('');refresh();}});
-$('cancel').addEventListener('click',()=>{workflow.cancel(); $('cancel').disabled=true; status('Abbruch wird ausgeführt ...');});
+$('back').addEventListener('click',()=>{if(!busy){$('result').hidden=true;lastResult=null;changeStep(1);status('');refresh();}});
+$('cancel').addEventListener('click',()=>{workflow.cancel(); $('cancel').disabled=true; status(()=>t('cancel.pending'));});
 $('thresholdSlider').addEventListener('input',()=>{$('threshold').value=$('thresholdSlider').value;saveSettings();});
 $('threshold').addEventListener('input',()=>{$('thresholdSlider').value=$('threshold').value;saveSettings();});
 $('preset').addEventListener('change',()=>{const preset=PRESETS[$('preset').value]; if(preset) preset.values.forEach((v,i)=>$(fields[i+1]).value=String(v)); saveSettings();});
 for(const field of fields.slice(1)) $(field).addEventListener('input',()=>{updatePreset();saveSettings();});
 $('settingsForm').addEventListener('submit',event=>event.preventDefault());
-refresh();
+$('language').addEventListener('change',()=>{ if (busy) return; storeLanguage($('language').value); applyLanguage($('language').value); });
+$('languageChoices').addEventListener('change',event=>{ markChoices('#languageChoices'); applyLanguage(event.target.value); });
+$('languageContinue').addEventListener('click',()=>{ storeLanguage(t.language); showApp(); $('sectionTitle').tabIndex=-1; $('sectionTitle').focus(); });
 
-function markScope() { for (const label of document.querySelectorAll('.scope')) label.classList.toggle('chosen',label.querySelector('input').checked); }
+function markScope() { markChoices('#scope'); }
 $('scope').addEventListener('change',markScope); markScope();
+
+const initialLanguage=storedLanguage();
+applyLanguage(initialLanguage || resolveLanguage(hostLocale()));
+if (initialLanguage) showApp(); else showLanguageScreen(t.language);
+refresh();

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {DEFAULT_SETTINGS, PRESETS, resolveSections, settingsToParameters, createWorkflow, formatSeconds, formatClock, formatPercent} from '../panel/js/workflow.js';
+import {DEFAULT_SETTINGS, PRESETS, resolveSections, settingsToParameters, createWorkflow} from '../panel/js/workflow.js';
+import {createTranslator} from '../panel/js/i18n.js';
 const seq={identity:'doc:target',endTicks:'2540160000000',sections:{readable:true,inTicks:null,outTicks:null,selectedSections:[]}};
 test('defaults use -45 dB and four 160 ms values with label correct names',()=>{
  assert.equal(DEFAULT_SETTINGS.threshold,-45);
@@ -11,15 +12,16 @@ test('defaults use -45 dB and four 160 ms values with label correct names',()=>{
  assert.throws(()=>settingsToParameters({...DEFAULT_SETTINGS,tail:10001}));
 });
 test('unset In/Out and empty selection stop instead of silently processing everything',()=>{
- assert.throws(()=>resolveSections(seq,'inout'),/In und Out/);
- assert.throws(()=>resolveSections(seq,'selected'),/Clips/);
+ assert.throws(()=>resolveSections(seq,'inout'),/In and Out/);
+ assert.throws(()=>resolveSections(seq,'selected'),/clips/);
+ assert.throws(()=>resolveSections(seq,'inout',createTranslator('es')),/entrada y la salida/);
  assert.deepEqual(resolveSections(seq,'entire'),[{startTicks:'0',endTicks:seq.endTicks}]);
 });
 test('selected sections merge overlap but preserve disjoint gaps and exact ticks',()=>{
  const sequence={...seq,endTicks:'10000000000000001',sections:{readable:true,selectedSections:[{startTicks:'10',endTicks:'20'},{startTicks:'15',endTicks:'30'},{startTicks:'10000000000000000',endTicks:'10000000000000001'}]}};
  assert.deepEqual(resolveSections(sequence,'selected'),[{startTicks:'10',endTicks:'30'},{startTicks:'10000000000000000',endTicks:'10000000000000001'}]);
 });
-function harness({fail,wait,plan,confirm=true}={}) {
+function harness({fail,wait,plan,confirm=true,t}={}) {
  const calls=[], notices=[], phases=[], previews=[]; const tracks=[{kind:'audio',index:0,name:'Voice',locked:false,muted:false,transitions:0,clips:[{id:'clip',startTicks:'0',endTicks:seq.endTicks,sourceInTicks:'0',sourceOutTicks:seq.endTicks,inPointSeconds:0,outPointSeconds:10,speed:1,mediaPath:'/test.mov',projectItemId:'clip',disabled:false,linked:null}]}];
  const sequence={...seq,ok:true,tracks,qeAvailable:true,fpsSupported:true,fpsObserved:true,fpsNumerator:25,fpsDenominator:1,zeroPointTicks:'0',sourceTicksReadable:true,mediaIdentityReadable:true,transitionsReadable:true,nativeTimelineAvailable:true};
  const items={identity:seq.identity,tracks:tracks.map(t=>({kind:t.kind,index:t.index,items:[]}))};
@@ -32,7 +34,7 @@ function harness({fail,wait,plan,confirm=true}={}) {
   if(name==='readItemsOfSequence') return {ok:true,parsed:{...items,identity:'doc:backup'},raw:'protected'};
   if(name==='renderAudio') return {ok:true,parsed:{mediaPath:'/render.wav'}};
   throw Error(`unexpected call ${name}`);
- },engine:{renderPath:()=>'/render.wav',run:async()=>{calls.push('engine');return {ok:true,envelope:{plan:plan||{intervals:[],removals:[],razorPoints:[],rejections:[],expectedDurationDeltaTicks:'0',ticksPerFrame:10160640000,frameRate:25},noiseEstimate:-45}};}},ui:{busy:(...args)=>{notices.push(args); if(args[0]&&args[3]) phases.push(args[3]);},backup:()=>{},error:e=>notices.push(e),complete:summary=>notices.push({complete:summary}),estimate:()=>{},confirm:async preview=>{previews.push(preview);return confirm;}}});
+ },engine:{renderPath:()=>'/render.wav',run:async()=>{calls.push('engine');return {ok:true,envelope:{plan:plan||{intervals:[],removals:[],razorPoints:[],rejections:[],expectedDurationDeltaTicks:'0',ticksPerFrame:10160640000,frameRate:25},noiseEstimate:-45}};}},ui:{busy:(...args)=>{notices.push(args); if(args[0]&&args[3]) phases.push(args[3]);},backup:()=>{},error:e=>notices.push(e),complete:summary=>notices.push({complete:summary}),estimate:()=>{},confirm:async preview=>{previews.push(preview);return confirm;}},t});
  return {workflow,calls,notices,phases,previews};
 }
 const config={scope:'entire',settings:DEFAULT_SETTINGS,analysisTracks:[{kind:'audio',index:0}]};
@@ -85,13 +87,17 @@ test('the threshold estimate never asks for confirmation',async()=>{
  assert.equal(h.previews.length,0);
  assert.equal(h.calls.includes('prepareCut'),false);
 });
-test('formatting helpers use German decimals and minutes',()=>{
- assert.equal(formatSeconds(41.234),'41,2\u00a0s');
- assert.equal(formatSeconds(0),'0,0\u00a0s');
- assert.equal(formatClock(754),'12:34\u00a0min');
- assert.equal(formatClock(59.6),'1:00\u00a0min');
- assert.equal(formatClock(-3),'0:00\u00a0min');
- assert.equal(formatPercent(41.2,754),'5,5\u00a0%');
- assert.equal(formatPercent(1,0),'0,0\u00a0%');
- assert.equal(PRESETS.mine.label,'Standard');
+test('presets are values only, their names live in the language tables',()=>{
+ assert.deepEqual(Object.keys(PRESETS),['mine','calm','measured','paced','energetic','jumpy']);
+ assert.deepEqual(PRESETS.mine.values,[160,160,160,160]);
+});
+test('workflow messages follow the injected language and default to English',async()=>{
+ const english=harness();const failed=await english.workflow.run(config);
+ assert.equal(failed.error,'Please open a sequence in Premiere first.');
+ const german=harness({fail:'prepareCut',t:createTranslator('de')});await german.workflow.refresh();
+ const result=await german.workflow.run(config);
+ assert.equal(result.ok,false);
+ assert.match(result.error,/^controlled failure$/);
+ const busy=german.notices.find(n=>Array.isArray(n)&&n[0]&&n[3]==='backup');
+ assert.equal(busy[1],'Backup wird erstellt ...');
 });

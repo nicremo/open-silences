@@ -2,56 +2,42 @@ import {
   assessCapabilities, buildSnapshot, validatePlan, preflightPlan,
   verifyNativePartitions, expectedAfterNativeCuts, verifyReadback, summarizePlan
 } from './core.js';
+import {createTranslator} from './i18n.js';
+
+const ENGLISH = createTranslator('en');
 
 export const DEFAULT_SETTINGS = Object.freeze({threshold:-45, minPause:160, minSpeech:160, leadIn:160, tail:160});
-// Timing presets in milliseconds: [minPause, minSpeech, leadIn, tail].
+// Timing presets in milliseconds: [minPause, minSpeech, leadIn, tail]. Names: preset.<key>.
 export const PRESETS = Object.freeze({
-  mine: {label:'Standard', values:[160,160,160,160]},
-  calm: {label:'Ruhig', values:[600,160,220,300]},
-  measured: {label:'Gemächlich', values:[400,160,180,240]},
-  paced: {label:'Flüssig', values:[260,160,160,180]},
-  energetic: {label:'Energisch', values:[160,120,100,120]},
-  jumpy: {label:'Sehr knapp', values:[100,80,60,80]}
+  mine: {values:[160,160,160,160]},
+  calm: {values:[600,160,220,300]},
+  measured: {values:[400,160,180,240]},
+  paced: {values:[260,160,160,180]},
+  energetic: {values:[160,120,100,120]},
+  jumpy: {values:[100,80,60,80]}
 });
 export const TIMING_FIELDS = Object.freeze(['minPause','minSpeech','leadIn','tail']);
 const TPS = 254016000000n;
 export const seconds = ticks => Number(BigInt(ticks)) / Number(TPS);
 
-/** Seconds with one German decimal, for example "41,2 s". */
-export function formatSeconds(value) {
-  return `${Number(value).toFixed(1).replace('.', ',')}\u00a0s`;
-}
-
-/** A duration as minutes and seconds, for example "12:34 min". */
-export function formatClock(value) {
-  const total = Math.max(0, Math.round(Number(value) || 0));
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}\u00a0min`;
-}
-
-/** Share of a whole with one German decimal, for example "5,5 %". */
-export function formatPercent(part, whole) {
-  const share = whole > 0 ? (part / whole) * 100 : 0;
-  return `${share.toFixed(1).replace('.', ',')}\u00a0%`;
-}
-
-export function resolveSections(sequence, scope) {
+export function resolveSections(sequence, scope, t = ENGLISH) {
   const end = BigInt(sequence.endTicks);
   let sections;
   if (scope === 'entire') sections = [{startTicks:'0', endTicks:end.toString()}];
   else {
-    if (!sequence.sections?.readable) throw Error('Die Bereichsauswahl ist nicht lesbar. Bitte Timeline erneut aktivieren.');
+    if (!sequence.sections?.readable) throw Error(t('error.sectionsUnreadable'));
     if (scope === 'inout') {
       const {inTicks, outTicks} = sequence.sections;
-      if (inTicks === null || outTicks === null) throw Error('Setze zuerst In und Out in der Timeline mit I und O.');
+      if (inTicks === null || outTicks === null) throw Error(t('error.setInOut'));
       sections = [{startTicks:inTicks, endTicks:outTicks}];
     } else if (scope === 'selected') {
       sections = sequence.sections.selectedSections;
-      if (!sections?.length) throw Error('Wähle zuerst die gewünschten Clips in der Timeline aus.');
-    } else throw Error('Bitte einen Bereich auswählen.');
+      if (!sections?.length) throw Error(t('error.selectClips'));
+    } else throw Error(t('error.chooseScope'));
   }
   const sorted = sections.map(range => {
     const start = BigInt(range.startTicks), finish = BigInt(range.endTicks);
-    if (start < 0n || finish > end || start >= finish) throw Error('Der gewählte Bereich liegt außerhalb der Timeline oder ist leer.');
+    if (start < 0n || finish > end || start >= finish) throw Error(t('error.rangeOutside'));
     return {start, end:finish};
   }).sort((a,b) => a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
   const merged = [];
@@ -63,29 +49,29 @@ export function resolveSections(sequence, scope) {
   return merged.map(range => ({startTicks:range.start.toString(), endTicks:range.end.toString()}));
 }
 
-export function settingsToParameters(values) {
+export function settingsToParameters(values, t = ENGLISH) {
   const threshold = Number(values.threshold);
-  if (!Number.isFinite(threshold) || threshold < -60 || threshold > 0) throw Error('Noise Floor muss zwischen -60 und 0 dB liegen.');
+  if (!Number.isFinite(threshold) || threshold < -60 || threshold > 0) throw Error(t('error.threshold'));
   const result = {thresholdDb:threshold};
   for (const field of TIMING_FIELDS) {
     const value = Number(values[field]);
-    if (!Number.isFinite(value) || value < 0 || value > 10000) throw Error('Die Zeitwerte müssen zwischen 0 und 10.000 ms liegen.');
+    if (!Number.isFinite(value) || value < 0 || value > 10000) throw Error(t('error.timings'));
     result[field] = value / 1000;
   }
   return result;
 }
 
 /** One protected user action: validate, backup, render, plan, cut, read back. */
-export function createWorkflow({host, engine, ui}) {
+export function createWorkflow({host, engine, ui, t = ENGLISH}) {
   let running = false;
   let sequence = null;
   let cancelled = false;
   const take = async(name,payload) => {
     const reply = await host(name,payload);
-    if (!reply?.ok) throw Error(reply?.error || 'Premiere konnte den Auftrag nicht ausführen.');
+    if (!reply?.ok) throw Error(reply?.error || t('error.host'));
     return reply;
   };
-  const checkCancelled = () => { if (cancelled) throw Error('Abgebrochen. Die Sequenz wurde nicht geschnitten.'); };
+  const checkCancelled = () => { if (cancelled) throw Error(t('error.cancelled')); };
   async function refresh() {
     if (running) return null;
     const reply = await take('readSequence'); sequence = reply.parsed; return sequence;
@@ -94,45 +80,45 @@ export function createWorkflow({host, engine, ui}) {
     if (running) return null;
     running = true; cancelled = false;
     let backup = null, cutting = false;
-    ui.busy(true, 'Bereich wird geprüft ...', true, 'check');
+    ui.busy(true, t('status.check'), true, 'check');
     try {
-      if (!sequence) throw Error('Bitte zuerst eine Sequenz in Premiere öffnen.');
+      if (!sequence) throw Error(t('error.noSequence'));
       const previousIdentity = sequence.identity;
       const fresh = await take('readSequence');
-      if (fresh.parsed.identity !== previousIdentity) throw Error('Die aktive Sequenz hat gewechselt. Bitte Bereich erneut wählen.');
+      if (fresh.parsed.identity !== previousIdentity) throw Error(t('error.sequenceChanged'));
       sequence = fresh.parsed;
-      const sections = resolveSections(sequence, config.scope);
-      const parameters = settingsToParameters(config.settings);
+      const sections = resolveSections(sequence, config.scope, t);
+      const parameters = settingsToParameters(config.settings, t);
       const capabilities = assessCapabilities(sequence);
-      if (!capabilities.nativeTimeline || !capabilities.canCut) throw Error(`Diese Sequenz kann noch nicht sicher geschnitten werden. ${capabilities.blockers.join(' ')}`);
+      if (!capabilities.nativeTimeline || !capabilities.canCut) throw Error(t('error.cannotCut', {detail:capabilities.blockers.join(' ')}));
       const analysisTracks = config.analysisTracks;
-      if (!analysisTracks?.length) throw Error('Wähle mindestens eine hörbare Audiospur mit Sprache.');
+      if (!analysisTracks?.length) throw Error(t('error.chooseTrack'));
       for (const ref of analysisTracks) {
         const track = sequence.tracks.find(t => t.kind === ref.kind && t.index === ref.index);
-        if (!track || track.kind !== 'audio' || track.muted !== false || track.locked !== false || !track.clips.length) throw Error('Eine gewählte Audiospur ist stumm, gesperrt oder leer. Bitte Bereich erneut wählen.');
+        if (!track || track.kind !== 'audio' || track.muted !== false || track.locked !== false || !track.clips.length) throw Error(t('error.trackUnavailable'));
       }
       const original = await take('readItems');
-      if (original.parsed.identity !== sequence.identity) throw Error('Die aktive Sequenz hat gewechselt.');
+      if (original.parsed.identity !== sequence.identity) throw Error(t('error.sequenceChanged'));
       checkCancelled();
       if (!estimateOnly) {
-        ui.busy(true, 'Backup wird erstellt ...', false, 'backup');
+        ui.busy(true, t('status.backup'), false, 'backup');
         backup = (await take('prepareCut', {expectedIdentity:sequence.identity, expectedStateFingerprint:fresh.raw, expectedItemFingerprint:original.raw})).parsed;
         const backupRead = await take('readItemsOfSequence', {sequenceId:backup.backupId});
-        if (backupRead.raw !== backup.backupItems || JSON.stringify(backupRead.parsed.tracks) !== JSON.stringify(original.parsed.tracks)) throw Error('Das Backup konnte nicht vollständig geprüft werden.');
+        if (backupRead.raw !== backup.backupItems || JSON.stringify(backupRead.parsed.tracks) !== JSON.stringify(original.parsed.tracks)) throw Error(t('error.backupUnverified'));
         ui.backup(backup.backupName);
       }
       checkCancelled();
       const state = await take('readSequence');
-      if (state.parsed.identity !== original.parsed.identity) throw Error('Die aktive Sequenz hat gewechselt.');
+      if (state.parsed.identity !== original.parsed.identity) throw Error(t('error.sequenceChanged'));
       const current = await take('readItems');
-      if (current.raw !== original.raw) throw Error('Die Timeline hat sich beim Backup geändert.');
+      if (current.raw !== original.raw) throw Error(t('error.timelineChangedBackup'));
       const tracks = state.parsed.tracks.map(t => ({...t, role:analysisTracks.some(ref => ref.kind === t.kind && ref.index === t.index) ? 'dialogue' : 'other'}));
       const renderPayload = {expectedIdentity:state.parsed.identity, expectedStateFingerprint:state.raw, expectedItemFingerprint:original.raw, analysisTracks};
       async function analyze(verifying = false) {
-        const renderText = verifying ? 'Audiomix wird vor dem Schnitt geprüft ...' : estimateOnly ? 'Pegel wird lokal berechnet ...' : 'Audio wird analysiert ...';
+        const renderText = t(verifying ? 'status.verifyMix' : estimateOnly ? 'status.estimate' : 'status.audio');
         ui.busy(true, renderText, false, verifying ? 'verify' : 'audio');
         const render = (await take('renderAudio', {...renderPayload, outputPath:engine.renderPath()})).parsed;
-        checkCancelled(); ui.busy(true, verifying ? 'Audiomix wird vor dem Schnitt geprüft ...' : 'Stillen werden erkannt ...', true, verifying ? 'verify' : 'detect');
+        checkCancelled(); ui.busy(true, t(verifying ? 'status.verifyMix' : 'status.detect'), true, verifying ? 'verify' : 'detect');
         const snapshot = buildSnapshot({sequence:{...state.parsed, startTicks:'0'}, tracks, analysisTracks, parameters,
           selectedSections:sections, renderedMixdown:{mediaPath:render.mediaPath, analysisTracks}, channelMode:'loudest'});
         const result = await engine.run(snapshot, {estimate:estimateOnly});
@@ -144,11 +130,11 @@ export function createWorkflow({host, engine, ui}) {
       }
       const analysis = await analyze();
       if (estimateOnly) {
-        if (!Number.isFinite(analysis.noiseEstimate)) throw Error('Kein eindeutiger Ruhepegel gefunden. Stelle den Noise Floor manuell ein, zum Beispiel auf -45 dB.');
+        if (!Number.isFinite(analysis.noiseEstimate)) throw Error(t('error.noEstimate'));
         ui.estimate(analysis.noiseEstimate); return {ok:true, noiseEstimate:analysis.noiseEstimate};
       }
       const plan = analysis.plan;
-      if (plan.rejections?.length) throw Error('Ein Teil der Timeline ist für diesen Schnitt ungeeignet. Prüfe gesperrte Spuren, Übergänge und fehlende Medien.');
+      if (plan.rejections?.length) throw Error(t('error.unsuitable'));
       if (!plan.intervals.length) {
         ui.complete({cutCount:0, removedSeconds:0, backupName:backup.backupName});
         return {ok:true, backup, plan};
@@ -166,14 +152,14 @@ export function createWorkflow({host, engine, ui}) {
       // A second native render checks mixer state that has no public reader.
       const checked = await analyze(true);
       const operations = p => JSON.stringify({intervals:p.intervals, removals:p.removals, razorPoints:p.razorPoints, delta:p.expectedDurationDeltaTicks});
-      if (operations(plan) !== operations(checked.plan)) throw Error('Der Audiomix hat sich geändert. Das Backup bleibt erhalten. Bitte erneut starten.');
+      if (operations(plan) !== operations(checked.plan)) throw Error(t('error.mixChanged'));
       const before = await take('readItems');
       const latest = await take('readSequence');
-      if (before.raw !== original.raw || latest.raw !== state.raw) throw Error('Die Timeline hat sich während der Analyse geändert. Bitte erneut starten.');
+      if (before.raw !== original.raw || latest.raw !== state.raw) throw Error(t('error.timelineChanged'));
       const preflight = preflightPlan({tracks:before.parsed.tracks, intervals:plan.intervals});
       if (preflight.length) throw Error(preflight.join(' '));
       checkCancelled(); cutting = true;
-      ui.busy(true, 'Stillen werden entfernt ...', false, 'cut');
+      ui.busy(true, t('status.cut'), false, 'cut');
       // 'ripple' restores the previous assembly with one ripple delete per pause.
       const applied = await take('apply', {plan, assembly:'shift', expectedOriginalId:backup.backupId, expectedOriginalFingerprint:backup.backupItems,
         expectedCloneIdentity:state.parsed.identity, expectedCloneFingerprint:before.raw, expectedStateFingerprint:latest.raw, nativeTimeline:true});
@@ -181,16 +167,16 @@ export function createWorkflow({host, engine, ui}) {
       if (partitionProblems.length) throw Error(partitionProblems.join(' '));
       const expected = expectedAfterNativeCuts({tracks:applied.parsed.beforeRemovalTracks, intervals:plan.intervals});
       const after = await take('readItems');
-      if (after.parsed.identity !== state.parsed.identity) throw Error('Nachprüfung: aktive Sequenz hat gewechselt.');
+      if (after.parsed.identity !== state.parsed.identity) throw Error(t('error.readbackSwitched'));
       const problems = verifyReadback({expected, actual:after.parsed.tracks});
       if (problems.length) throw Error(problems.join(' '));
       const backupAfter = await take('readItemsOfSequence', {sequenceId:backup.backupId});
-      if (backupAfter.raw !== backup.backupItems) throw Error('Die Backup-Sequenz hat sich geändert.');
+      if (backupAfter.raw !== backup.backupItems) throw Error(t('error.backupChanged'));
       const summary = summarizePlan(plan);
       ui.complete({...summary, backupName:backup.backupName});
       return {ok:true, backup, plan, summary};
     } catch (error) {
-      const message = `${error.message}${backup ? ` Backup: ${backup.backupName}.` : ''}${cutting ? ' Der Schnitt wurde nicht bestätigt. Öffne das Backup, um den vorherigen Stand wiederherzustellen.' : ''}`;
+      const message = `${error.message}${backup ? t('error.withBackup', {name:backup.backupName}) : ''}${cutting ? t('error.notConfirmed') : ''}`;
       ui.error(message); return {ok:false, error:message, backup};
     } finally { running = false; ui.busy(false, '', false); }
   }
