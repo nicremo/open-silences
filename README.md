@@ -20,6 +20,7 @@
 </p>
 
 <p align="center">
+  <a href="https://opensilences.nicremo.de"><strong>Website</strong></a> ·
   <a href="#watch">Watch</a> ·
   <a href="#why-open-silences">Why</a> ·
   <a href="#get-started">Get started</a> ·
