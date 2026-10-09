@@ -1,6 +1,6 @@
 # Architecture
 
-The CEP panel owns the user workflow and launches the local Rust engine. ExtendScript reads and changes Premiere state. The engine receives explicit snapshots and produces plans using integer tick strings.
+The CEP panel owns the user workflow and launches the local Rust engine. Its copy lives in `panel/js/i18n.js` (English, Spanish, German); everything below the panel, host replies and engine errors, is written in English. ExtendScript reads and changes Premiere state. The engine receives explicit snapshots and produces plans using integer tick strings.
 
 The pause detector is specified in `docs/DETECTION.md` and implemented in the engine from that document. When a plan is applied, the ExtendScript adapter indexes the plan and the timeline once per run instead of rescanning both for every cut.
 

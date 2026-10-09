@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The panel speaks English, Spanish and German. English is the default; the language is chosen on first open and can be changed any time from the header.
+- Host and engine diagnostics are written in English.
+- Analysis copies are filed in the project bin **Open Silences Analysis**.
+
 ## 0.2.0-alpha.1
 
 First tracked snapshot.

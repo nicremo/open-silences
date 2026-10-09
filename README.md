@@ -44,10 +44,10 @@ Removing pauses from a talking head video should take one click, not an afternoo
 - **Free and open source.** MIT licensed. No subscription, no account, no feature gate.
 - **Local.** Your audio never leaves your Mac. Premiere renders the selected voice tracks, a Rust engine reads them directly.
 - **A backup before every run.** Open Silences duplicates your sequence into a project bin and verifies the copy before it analyses or cuts anything.
-- **See it before it happens.** The panel shows how many pauses it found and how much time goes away. Nothing is cut until you click **Jetzt schneiden**.
+- **See it before it happens.** The panel shows how many pauses it found and how much time goes away. Nothing is cut until you click **Cut now**.
 - **Speech stays.** Short, loud words such as "ja" or "and" stay. Breaths, clicks and other short quiet noises inside a pause do not count as speech.
 - **Only dialogue time is judged.** B-roll and gaps without a dialogue clip are never cut, and cuts shorter than 100 ms are skipped.
-- **An automatic threshold.** "Pegel automatisch schätzen" finds the gap between your room tone and your quietest syllables and suggests a noise floor in the middle of it.
+- **An automatic threshold.** "Estimate level automatically" finds the gap between your room tone and your quietest syllables and suggests a noise floor in the middle of it.
 - **Fast assembly.** Pauses are lifted and every remaining clip moves once, instead of one ripple delete per pause.
 - **Verified result.** After the cut every clip position, source range and media reference is read back and compared with the plan.
 
@@ -96,27 +96,27 @@ flowchart LR
     C --> D[Rust engine: 10 ms levels, speech regions, pauses]
     D --> E[Frame aligned plan in exact ticks]
     E --> F{Preview: N pauses, X s}
-    F -->|Jetzt schneiden| G[Second render checks the mix]
+    F -->|Cut now| G[Second render checks the mix]
     G --> H[Lift pauses, move each clip once]
     H --> I[Readback against plan and backup]
-    F -->|Nicht schneiden| J[Nothing changes, backup stays]
+    F -->|Don't cut| J[Nothing changes, backup stays]
 ```
 
 The detector is specified in [docs/DETECTION.md](docs/DETECTION.md): audible regions above the threshold, short gaps bridged, quiet blips dropped, air kept before and after speech. The planner snaps every cut inward to whole frames, so a cut never reaches into speech. The architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Settings
 
-The panel is in German. All settings stay on your computer.
+The panel speaks English, Spanish and German. It asks for your language the first time it opens, and the globe menu at the top changes it any time. All settings stay on your computer.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| Noise Floor | -45 dB | Audio below this level counts as silence. "Pegel automatisch schätzen" suggests a value for your recording. |
-| Stillen ab | 160 ms | Shorter pauses stay. |
-| Sprache ab | 160 ms | Shorter, quiet sounds do not count as speech. Short loud words stay. |
-| Luft vor Sprache | 160 ms | Audio kept before speech starts. |
-| Luft nach Sprache | 160 ms | Audio kept after speech ends. |
+| Noise floor | -45 dB | Audio below this level counts as silence. "Estimate level automatically" suggests a value for your recording. |
+| Silence from | 160 ms | Shorter pauses stay. |
+| Speech from | 160 ms | Shorter, quiet sounds do not count as speech. Short loud words stay. |
+| Air before speech | 160 ms | Audio kept before speech starts. |
+| Air after speech | 160 ms | Audio kept after speech ends. |
 
-Presets from **Standard** to **Sehr knapp** set the four timing values at once.
+Pacing presets from **Standard** to **Very tight** set the four timing values at once.
 
 ## Limits
 

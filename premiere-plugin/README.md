@@ -1,6 +1,6 @@
 # Open Silences
 
-Lokales Stillenschneiden in Premiere Pro. Die Oberfläche hat zwei Schritte:
+Lokales Stillenschneiden in Premiere Pro. Das Panel spricht Englisch, Spanisch und Deutsch. Beim ersten Öffnen wählst du die Sprache, danach lässt sie sich jederzeit über das Globus-Menü oben ändern. Die Texte unten nennen die deutschen Bezeichnungen. Die Oberfläche hat zwei Schritte:
 
 1. Ganze Timeline, In/Out oder ausgewählte Clips wählen. Die Audiospuren mit Sprache markieren.
 2. Noise Floor und Schnitttempo einstellen. Auf **Stillen entfernen** klicken.
@@ -13,7 +13,7 @@ Zuerst wird eine native Sequenzkopie im Projektordner **Open Silences Backups** 
 
 Geschnitten wird die ursprüngliche aktive Sequenz. Das Backup bleibt erhalten. Bild und alle betroffenen Tonspuren rücken zusammen. Nach dem Eingriff werden alle Clippositionen, Quellbereiche, Medienzuordnungen und das unveränderte Backup geprüft. Bei unerwartetem Zustand gibt es keinen weiteren Schnitt und keine Erfolgsmeldung. Ein bereits begonnener Eingriff wird nicht automatisch zurückgerollt. In diesem Fall steht das benannte Backup zum Wiederherstellen bereit.
 
-Analysekopien liegen getrennt unter **Open Silences Analysen**. Audioexport und nativer Schnitt blockieren zeitweise Premiere und sind nicht abbrechbar. Die Rust-Analyse ist abbrechbar. Laufbelege inklusive WAV-Dateien bleiben im temporären Ordner `open-silences-evidence` erhalten.
+Analysekopien liegen getrennt unter **Open Silences Analysis**. Audioexport und nativer Schnitt blockieren zeitweise Premiere und sind nicht abbrechbar. Die Rust-Analyse ist abbrechbar. Laufbelege inklusive WAV-Dateien bleiben im temporären Ordner `open-silences-evidence` erhalten.
 
 ## Einstellungen
 

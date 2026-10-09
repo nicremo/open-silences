@@ -52,8 +52,8 @@ A pause that becomes empty is dropped. All times are clamped to the audio durati
 | Threshold | `thresholdDb` | -45 dB | Blocks below this level count as quiet. Valid from -90 to 0 dB. |
 | Minimum pause | `minPause` | 0.16 s | Shorter pauses stay. |
 | Minimum speech | `minSpeech` | 0.16 s | Shorter regions without a clear peak count as noise. |
-| Lead-in | `leadIn` | 0.16 s | Air kept before speech. Panel label: "Luft vor Sprache". |
-| Tail | `tail` | 0.16 s | Air kept after speech. Panel label: "Luft nach Sprache". |
+| Lead-in | `leadIn` | 0.16 s | Air kept before speech. Panel label: "Air before speech". |
+| Tail | `tail` | 0.16 s | Air kept after speech. Panel label: "Air after speech". |
 
 All durations are seconds from 0 to 60.
 
@@ -67,7 +67,7 @@ The planner turns pauses into an integer tick plan. In addition to its safety ru
 
 ## Threshold suggestion
 
-"Pegel automatisch schätzen" uses only blocks inside the selected range that are covered by an enabled clip on a selected dialogue track.
+"Estimate level automatically" uses only blocks inside the selected range that are covered by an enabled clip on a selected dialogue track.
 
 1. Blocks at or below -90 dBFS are digital silence from gaps, noise gates or denoisers. They are not room tone and are set aside. Their share of all blocks is the gated share.
 2. Without at least one second of remaining blocks there is no suggestion.
