@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  CEP manifest for the Open Silences panel.
+
+  CEP manifest structure for the supported Premiere host range in
+  Premiere Pro 26.5.2: manifest version 11, CSXS 11 runtime, CEP command line
+  with Node.js enabled so the panel can start the bundled Rust engine.
+-->
+<ExtensionManifest
+  Version="11.0"
+  ExtensionBundleId="de.fabian.open-silences"
+  ExtensionBundleVersion="0.2.0"
+  ExtensionBundleName="Open Silences Alpha"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+>
+  <ExtensionList>
+    <Extension Id="de.fabian.open-silences.main" Version="0.2.0" />
+  </ExtensionList>
+  <ExecutionEnvironment>
+    <HostList>
+      <!-- Only Premiere Pro 26.5.2 is observed. The range is deliberately narrow. -->
+      <Host Name="PPRO" Version="[26.5,26.6)" />
+    </HostList>
+    <LocaleList>
+      <Locale Code="All" />
+    </LocaleList>
+    <RequiredRuntimeList>
+      <RequiredRuntime Name="CSXS" Version="11.0" />
+    </RequiredRuntimeList>
+  </ExecutionEnvironment>
+  <DispatchInfoList>
+    <Extension Id="de.fabian.open-silences.main">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <ScriptPath>./jsx/silences.jsx</ScriptPath>
+          <CEFCommandLine>
+            <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--mixed-context</Parameter>
+          </CEFCommandLine>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>false</AutoVisible>
+        </Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>Open Silences (Alpha)</Menu>
+          <Geometry>
+            <Size>
+              <Width>420</Width>
+              <Height>760</Height>
+            </Size>
+          </Geometry>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+  </DispatchInfoList>
+</ExtensionManifest>

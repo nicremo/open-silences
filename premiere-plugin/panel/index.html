@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Open Silences</title>
+  <style>
+    :root { color-scheme:dark; --bg:#202326; --surface:#292e32; --border:#464d53; --text:#f2f4f4; --muted:#b0b9be; --accent:#91dfc6; --focus:#b1f7e1; --error:#ffb4ac; }
+    * { box-sizing:border-box; }
+    [hidden] { display:none !important; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
+    .app { display:flex; flex-direction:column; height:100vh; min-height:260px; }
+    header { padding:20px 20px 14px; }
+    .brand { display:flex; align-items:center; gap:9px; font-weight:650; font-size:16px; letter-spacing:-.025em; }
+    .brand svg { color:var(--accent); flex-shrink:0; }
+    .steps { display:flex; gap:18px; list-style:none; padding:0; margin:14px 0 0; color:var(--muted); font-size:12px; }
+    .steps li { display:flex; gap:6px; align-items:center; }
+    .steps span { display:inline-grid; place-items:center; width:20px; height:20px; border-radius:50%; border:1px solid var(--border); font-size:11px; }
+    .steps [aria-current="step"] { color:var(--accent); }
+    .steps [aria-current="step"] span { border-color:var(--accent); background:#263c36; }
+    main { flex:1; overflow:auto; padding:4px 20px 22px; }
+    h1 { font-size:22px; line-height:1.2; letter-spacing:-.035em; margin:10px 0 8px; font-weight:650; }
+    h2,legend { font-size:14px; font-weight:600; margin:0 0 10px; padding:0; }
+    p { margin:0 0 16px; }
+    .muted,.help { color:var(--muted); }
+    .help { font-size:12px; margin:5px 0 0; }
+    .sequence { padding:12px 14px; border-radius:10px; background:var(--surface); margin:20px 0; }
+    .sequence strong { display:block; font-weight:550; overflow-wrap:anywhere; }
+    .sequence .meta { font-size:12px; margin-top:3px; color:var(--muted); }
+    fieldset { border:0; margin:0 0 24px; padding:0; min-width:0; }
+    .scope { display:flex; align-items:flex-start; gap:10px; padding:12px; border:1px solid var(--border); border-radius:9px; margin:8px 0; cursor:pointer; }
+    .scope.chosen { border-color:var(--accent); background:#263630; }
+    .scope strong { display:block; font-size:14px; font-weight:550; }
+    .scope small { display:block; font-size:12px; color:var(--muted); margin-top:2px; }
+    input[type="radio"],input[type="checkbox"] { accent-color:var(--accent); width:16px; height:16px; margin:3px 0 0; flex-shrink:0; }
+    .track { display:flex; align-items:center; gap:10px; padding:9px 0; min-height:38px; cursor:pointer; }
+    .track small { margin-left:auto; color:var(--muted); font-size:12px; }
+    .track.unavailable { color:var(--muted); cursor:default; }
+    .topline { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:12px; }
+    button,input,select { font:inherit; }
+    button { min-height:36px; border:1px solid var(--border); border-radius:7px; padding:7px 12px; background:var(--surface); color:var(--text); cursor:pointer; transition:background-color 120ms ease,border-color 120ms ease; }
+    button:hover:not(:disabled) { background:#343c40; border-color:#78878e; }
+    button:disabled { opacity:.45; cursor:default; }
+    button.quiet { background:transparent; font-size:12px; padding:4px 8px; }
+    button.back { padding:4px 0; border:0; background:none; color:var(--muted); min-height:32px; }
+    button.primary { background:var(--accent); color:#143429; border-color:var(--accent); font-weight:650; width:100%; min-height:44px; }
+    button.primary:hover:not(:disabled) { background:#b1ecd9; border-color:#b1ecd9; }
+    :focus-visible { outline:2px solid var(--focus); outline-offset:3px; }
+    .noise-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:22px; }
+    .noise-heading label { font-weight:600; }
+    input[type="number"], select { color:var(--text); background:var(--surface); border:1px solid var(--border); border-radius:7px; min-height:38px; padding:6px 9px; font-variant-numeric:tabular-nums; }
+    input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
+    input[type="range"] { accent-color:var(--accent); width:100%; margin:16px 0 4px; }
+    .range-labels { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); }
+    .estimate { margin-top:12px; width:100%; }
+    .preset { display:flex; gap:12px; align-items:center; margin:26px 0 18px; }
+    .preset label { flex:1; font-weight:600; }
+    select { -webkit-appearance:none; appearance:none; min-width:150px; max-width:65%; padding-right:32px; cursor:pointer; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%23b0b9be' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 11px center; transition:border-color 120ms ease; }
+    select:hover { border-color:#78878e; }
+    select:focus-visible { border-color:var(--accent); }
+    .timings { display:flex; flex-direction:column; gap:16px; }
+    .timing { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; }
+    .timing label { display:block; font-size:13px; font-weight:550; }
+    .timing .help { margin-top:2px; }
+    .timing .number { width:104px; flex-shrink:0; }
+    .number { display:flex; align-items:center; border:1px solid var(--border); border-radius:7px; background:var(--surface); transition:border-color 120ms ease; }
+    .number:hover { border-color:#78878e; }
+    .number:focus-within { border-color:var(--accent); }
+    .number input { border:0; background:transparent; width:100%; min-width:0; text-align:right; padding-right:4px; }
+    .number input:focus-visible { outline:none; }
+    .number span { padding-right:10px; font-size:12px; color:var(--muted); }
+    .threshold-field { width:116px; }
+    .threshold-field input { font-size:18px; font-weight:600; }
+    footer { padding:14px 20px 18px; border-top:1px solid #353c40; background:var(--bg); }
+    .safety { text-align:center; font-size:12px; color:var(--muted); margin:0 0 10px; }
+    #status { font-size:13px; line-height:1.5; margin-bottom:10px; overflow-wrap:anywhere; }
+    #status.error { color:var(--error); }
+    #status.success { color:var(--accent); }
+    #cancel { width:100%; margin-top:8px; }
+    #backupNotice { font-size:12px; color:var(--muted); margin-top:16px; overflow-wrap:anywhere; }
+    .progress { display:flex; gap:6px; list-style:none; padding:0; margin:0 0 10px; }
+    .progress li { flex:1; padding-top:6px; border-top:3px solid var(--border); font-size:11px; color:var(--muted); text-align:center; }
+    .progress li.done { border-top-color:#4f7a6c; color:var(--text); }
+    .progress li.active { border-top-color:var(--accent); color:var(--accent); font-weight:600; }
+    .hint { font-size:12px; color:var(--muted); margin:0 0 10px; }
+    .confirm { padding:12px 14px; border:1px solid var(--accent); border-radius:10px; background:#263630; margin-bottom:10px; }
+    .confirm p { margin:0 0 10px; font-size:13px; }
+    .confirm-actions { display:flex; gap:8px; }
+    .confirm-actions button { flex:1; }
+    .confirm-actions button.primary { min-height:36px; }
+    .result { display:flex; flex-direction:column; gap:2px; padding:12px 14px; border-radius:10px; background:var(--surface); margin-bottom:10px; }
+    .result strong { font-size:20px; font-weight:650; letter-spacing:-.02em; color:var(--accent); font-variant-numeric:tabular-nums; }
+    .result span { font-size:12px; color:var(--muted); overflow-wrap:anywhere; }
+    @media(max-width:320px) { header { padding:16px 14px 12px; } main { padding-left:14px; padding-right:14px; } footer { padding-left:14px; padding-right:14px; } .timing .number { width:92px; } .threshold-field { width:104px; } .steps { gap:10px; } .confirm-actions { flex-direction:column-reverse; } }
+    @media(prefers-reduced-motion:reduce) { button { transition:none; } }
+    @media(prefers-reduced-motion:no-preference) { .progress li { transition:border-color 160ms ease,color 160ms ease; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 10v4m4-8v12m4-15v18m4-15v12m4-8v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Open Silences</div>
+      <ol class="steps" aria-label="Ablauf"><li id="stepOne" aria-current="step"><span>1</span>Bereich</li><li id="stepTwo"><span>2</span>Einstellungen</li></ol>
+    </header>
+    <main>
+      <section id="sections" aria-labelledby="sectionTitle">
+        <h1 id="sectionTitle">Was möchtest du schneiden?</h1>
+        <p class="muted">Wähle einen Bereich und die Spuren mit deiner Stimme.</p>
+        <div class="sequence"><strong id="sequenceName">Sequenz wird gelesen ...</strong><div id="sequenceMeta" class="meta"></div></div>
+        <fieldset id="scope"><legend>Bereich der Timeline</legend>
+          <label class="scope"><input type="radio" name="scope" value="entire" checked/><span><strong>Ganze Timeline</strong><small>Die komplette aktive Sequenz.</small></span></label>
+          <label class="scope"><input type="radio" name="scope" value="inout"/><span><strong>In- und Out-Punkte</strong><small>Den Bereich mit I und O in Premiere markieren.</small></span></label>
+          <label class="scope"><input type="radio" name="scope" value="selected"/><span><strong>Ausgewählte Clips</strong><small>Nur die markierten Abschnitte bearbeiten.</small></span></label>
+        </fieldset>
+        <fieldset><div class="topline"><legend>Audiospuren mit Sprache</legend><button class="quiet" id="refresh" type="button">Aktualisieren</button></div><div id="tracks"></div><p class="help">Diese Spuren bestimmen, wo gesprochen wird. Beim Schneiden bleiben Bild und Ton zusammen.</p></fieldset>
+      </section>
+      <section id="settings" aria-labelledby="settingsTitle" hidden>
+        <button class="back" id="back" type="button">‹ Bereich ändern</button>
+        <h1 id="settingsTitle">Stillen entfernen</h1>
+        <p class="help" id="scopeSummary"></p>
+        <form id="settingsForm">
+          <div class="noise-heading"><label for="threshold">Noise Floor</label><div class="number threshold-field"><input id="threshold" type="number" min="-60" max="0" step="0.1" value="-45" required/><span>dB</span></div></div>
+          <input id="thresholdSlider" type="range" min="-60" max="0" step="0.1" value="-45" aria-label="Noise Floor in Dezibel"/>
+          <div class="range-labels"><span>-60 dB</span><span>0 dB</span></div>
+          <p class="help">Audio unter diesem Pegel gilt als Stille. Typisch für Sprache: -50 bis -40 dB.</p>
+          <button id="estimate" type="button" class="estimate">Pegel automatisch schätzen</button>
+          <p class="help">Berechnet lokal aus den gewählten Audiospuren.</p>
+          <div class="preset"><label for="preset">Schnitttempo</label><select id="preset"><option value="mine">Standard</option><option value="calm">Ruhig</option><option value="measured">Gemächlich</option><option value="paced">Flüssig</option><option value="energetic">Energisch</option><option value="jumpy">Sehr knapp</option><option value="custom">Eigene Werte</option></select></div>
+          <div class="timings">
+            <div class="timing"><div><label for="minPause">Stillen ab</label><p class="help">Kürzere Pausen bleiben erhalten.</p></div><div class="number"><input id="minPause" type="number" min="0" max="10000" step="10" value="160" required/><span>ms</span></div></div>
+            <div class="timing"><div><label for="minSpeech">Sprache ab</label><p class="help">Kürzere, leise Geräusche zählen nicht als Sprache. Kurze laute Wörter bleiben.</p></div><div class="number"><input id="minSpeech" type="number" min="0" max="10000" step="10" value="160" required/><span>ms</span></div></div>
+            <div class="timing"><div><label for="leadIn">Luft vor Sprache</label><p class="help">Schützt den Anfang deiner Wörter.</p></div><div class="number"><input id="leadIn" type="number" min="0" max="10000" step="10" value="160" required/><span>ms</span></div></div>
+            <div class="timing"><div><label for="tail">Luft nach Sprache</label><p class="help">Lässt Wörter natürlich ausklingen.</p></div><div class="number"><input id="tail" type="number" min="0" max="10000" step="10" value="160" required/><span>ms</span></div></div>
+          </div>
+        </form>
+        <div id="backupNotice" hidden></div>
+      </section>
+    </main>
+    <footer>
+      <ol id="progress" class="progress" aria-label="Fortschritt" hidden></ol>
+      <div id="status" role="status" aria-live="polite" hidden></div>
+      <p id="blockingHint" class="hint" hidden>Premiere reagiert in diesem Schritt kurz nicht. Das ist normal.</p>
+      <div id="confirm" class="confirm" role="group" aria-labelledby="confirmText" hidden>
+        <p id="confirmText"></p>
+        <div class="confirm-actions"><button id="confirmCancel" type="button" data-keep-enabled="true">Nicht schneiden</button><button id="confirmCut" type="button" class="primary" data-keep-enabled="true">Jetzt schneiden</button></div>
+      </div>
+      <div id="result" class="result" role="status" aria-live="polite" hidden><strong id="resultValue"></strong><span id="resultDetail"></span></div>
+      <p id="safety" class="safety" hidden>Vor dem Schnitt wird automatisch ein Backup angelegt.</p>
+      <button id="primary" type="button" class="primary" disabled>Weiter zu Einstellungen</button>
+      <button id="cancel" type="button" hidden>Analyse abbrechen</button>
+    </footer>
+  </div>
+  <script src="./js/CSInterface.js"></script>
+  <script type="module" src="./js/main.js"></script>
+</body>
+</html>

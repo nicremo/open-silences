@@ -1,0 +1,10 @@
+* text=auto
+*.sh text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.jsx text eol=lf
+*.rs text eol=lf
+*.pdf binary
+
+# Preserve the official SDK file byte for byte.
+premiere-plugin/panel/js/CSInterface.js -whitespace

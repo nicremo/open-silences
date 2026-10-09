@@ -1,0 +1,27 @@
+[package]
+name = "silences-engine"
+version = "2.0.0"
+edition = "2021"
+repository = "https://github.com/nicremo/open-silences"
+license = "MIT"
+description = "Silence analysis and integer tick cut planning for the Premiere Pro panel"
+# The engine ships inside the Premiere package, not on crates.io.
+publish = false
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[[bin]]
+name = "silences-engine"
+path = "src/main.rs"
+
+[lib]
+name = "silences_engine"
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
