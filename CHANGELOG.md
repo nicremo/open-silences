@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.2.0-alpha.2
 
 - The panel speaks English, Spanish and German. English is the default; the language is chosen on first open and can be changed any time from the header.
 - Host and engine diagnostics are written in English.
 - Analysis copies are filed in the project bin **Open Silences Analysis**.
+- The launch film is in English and shows the result inside the timeline: the removed time stays at the end of the track and is measured.
 
 ## 0.2.0-alpha.1
 

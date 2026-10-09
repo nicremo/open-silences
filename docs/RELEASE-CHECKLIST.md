@@ -10,6 +10,7 @@ The repository is public since 0.2.0-alpha.1.
 - [x] Third-party notices and original SDK license retained.
 - [x] CI workflow, contribution instructions and issue templates.
 - [x] Changelog for 0.2.0-alpha.1.
+- [x] Changelog for 0.2.0-alpha.2.
 
 ## Before public release
 
