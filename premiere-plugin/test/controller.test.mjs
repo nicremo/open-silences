@@ -124,7 +124,7 @@ function makeController({ engineRun, readFails = false } = {}) {
   const host = {
     readSequence: async () => (readFails ? { ok: false, error: 'Keine aktive Sequenz.' } : sequenceRead()),
     readItems: async () => itemsRead(),
-    call: async () => ({ ok: false, error: 'nicht verwendet' })
+    call: async () => ({ ok: false, error: 'not used' })
   };
   const engine = {
     run: async snapshot => {
@@ -203,7 +203,7 @@ test('a parameter change invalidates the plan', async () => {
   await controller.readSequence();
   await controller.analyze();
   assert.ok(controller.getState().plan);
-  controller.invalidate('Einstellung geändert');
+  controller.invalidate('Setting changed');
   assert.equal(controller.getState().plan, null);
   assert.equal(controller.getState().analyzed, null);
   assert.equal(controller.canApply(), false);
@@ -231,7 +231,7 @@ test('two apply clicks reach the host once', async () => {
         await gate;
         return { ok: false, error: 'Abbruch nach der Messung' };
       }
-      return { ok: false, error: 'nicht verwendet' };
+      return { ok: false, error: 'not used' };
     }
   };
   const engine = {
@@ -304,11 +304,11 @@ test('a stale generation is discarded', async () => {
   // Wait until the engine is really running, then invalidate the generation the
   // way a form change does. The single flight guard must not be weakened.
   await started;
-  controller.invalidate('Einstellung geändert');
+  controller.invalidate('Setting changed');
   releaseEngine();
   await running;
   assert.equal(controller.getState().plan, null, 'the stale plan must not be kept');
-  assert.ok(ui.messages.some(entry => entry.message.includes('Ergebnis verworfen')));
+  assert.ok(ui.messages.some(entry => entry.message.includes('result discarded')));
 });
 
 test('every reached stage clears the busy flag', async () => {

@@ -46,9 +46,9 @@ test('tick strings stay exact beyond the safe number range', () => {
   assert.equal(subtractTicks('10000000000000002', huge), '1');
   assert.equal(normalizeTicks(1234), '1234');
   assert.equal(normalizeTicks('  42 '), '42');
-  assert.throws(() => normalizeTicks('12.5'), /Ungültiger Tickwert/);
-  assert.throws(() => normalizeTicks('abc'), /Ungültiger Tickwert/);
-  assert.throws(() => normalizeTicks(Number.MAX_SAFE_INTEGER + 2), /sichere Zahlengrenze/);
+  assert.throws(() => normalizeTicks('12.5'), /Invalid tick value/);
+  assert.throws(() => normalizeTicks('abc'), /Invalid tick value/);
+  assert.throws(() => normalizeTicks(Number.MAX_SAFE_INTEGER + 2), /safe integer range/);
 });
 
 test('frame arithmetic uses exact integers', () => {
@@ -59,8 +59,8 @@ test('frame arithmetic uses exact integers', () => {
   assert.equal(framesFromTicks('10000000000000001', ticksPerFrame), expectedFrames);
   assert.ok(expectedFrames > 900000, 'the long position must stay in a plausible frame range');
   assert.equal(ticksToSeconds(TICKS_PER_SECOND), 1);
-  assert.throws(() => ticksPerFrameFor(0, 1), /positiv/);
-  assert.throws(() => ticksPerFrameFor(25.5, 1), /ganzzahliger/);
+  assert.throws(() => ticksPerFrameFor(0, 1), /positive/);
+  assert.throws(() => ticksPerFrameFor(25.5, 1), /integer numerator/);
 });
 
 test('timecode is relative, exactly as the QE razor expects it', () => {
@@ -82,8 +82,8 @@ test('drop frame rates are refused instead of guessed', () => {
 test('unreadable booleans abort, they never become false', () => {
   assert.equal(requiredBoolean(() => true, 'locked'), true);
   assert.equal(requiredBoolean(() => 0, 'locked'), false);
-  assert.throws(() => requiredBoolean(() => undefined, 'locked'), /nicht lesbar/);
-  assert.throws(() => requiredBoolean(() => null, 'locked'), /nicht lesbar/);
+  assert.throws(() => requiredBoolean(() => undefined, 'locked'), /not readable/);
+  assert.throws(() => requiredBoolean(() => null, 'locked'), /not readable/);
   assert.throws(
     () =>
       requiredBoolean(() => {
@@ -91,8 +91,8 @@ test('unreadable booleans abort, they never become false', () => {
       }, 'locked'),
     /EvalScript error/
   );
-  assert.throws(() => requiredBoolean(() => 'true', 'locked'), /ungültig/);
-  assert.throws(() => requiredBoolean(() => 2, 'locked'), /ungültig/);
+  assert.throws(() => requiredBoolean(() => 'true', 'locked'), /invalid/);
+  assert.throws(() => requiredBoolean(() => 2, 'locked'), /invalid/);
 });
 
 test('tri-state flags keep unknown unknown', () => {
@@ -194,7 +194,7 @@ test('snapshot keeps exact ticks and refuses unreadable state', () => {
         parameters: { thresholdDb: -35, minPause: 0.3, minSpeech: 0.2, leadIn: 0.2, tail: 0.2 },
         channelMode: 'loudest'
       }),
-    /Sperrstatus/
+    /Lock state/
   );
 
   const unreadableDisabled = baseTracks();
@@ -208,7 +208,7 @@ test('snapshot keeps exact ticks and refuses unreadable state', () => {
         parameters: { thresholdDb: -35, minPause: 0.3, minSpeech: 0.2, leadIn: 0.2, tail: 0.2 },
         channelMode: 'loudest'
       }),
-    /Deaktiviert-Status/
+    /Disabled state/
   );
 });
 
@@ -225,8 +225,8 @@ test('capabilities name every missing reader and block the cut', () => {
   const assessment = assessCapabilities(hostReality);
   assert.equal(assessment.canCut, false);
   assert.equal(assessment.readable.length, 4);
-  assert.ok(assessment.blockers.some(message => message.includes('Remap')));
-  assert.ok(assessment.blockers.some(message => message.includes('Kanalzuordnung')));
+  assert.ok(assessment.blockers.some(message => message.includes('remap')));
+  assert.ok(assessment.blockers.some(message => message.includes('channel mapping')));
 
   const complete = { ...hostReality, timeRemapReadable: true, audioStateReadable: true };
   assert.equal(assessCapabilities(complete).canCut, true);
@@ -247,15 +247,15 @@ test('plan validation catches double ripple and duplicate razors', () => {
 
   const doubleRipple = JSON.parse(JSON.stringify(good));
   doubleRipple.removals[1].ripple = true;
-  assert.ok(validatePlan(doubleRipple).some(message => message.includes('rippeln')));
+  assert.ok(validatePlan(doubleRipple).some(message => message.includes('ripple')));
 
   const duplicates = JSON.parse(JSON.stringify(good));
   duplicates.razorPoints.push({ ticks: '200' });
-  assert.ok(validatePlan(duplicates).some(message => message.includes('doppelte')));
+  assert.ok(validatePlan(duplicates).some(message => message.includes('duplicate')));
 
   const longer = JSON.parse(JSON.stringify(good));
   longer.expectedDurationDeltaTicks = '100';
-  assert.ok(validatePlan(longer).some(message => message.includes('verlängern')));
+  assert.ok(validatePlan(longer).some(message => message.includes('lengthen')));
 });
 
 const SECOND = 254016000000n;
@@ -309,7 +309,7 @@ test('readback verification detects every wrong result', () => {
   const changedSourceIn = JSON.parse(JSON.stringify(correct));
   changedSourceIn[0].items[1].sourceInTicks = (99n * SECOND).toString();
   assert.ok(
-    verifyReadback({ expected, actual: changedSourceIn }).some(message => message.includes('Quellstart')),
+    verifyReadback({ expected, actual: changedSourceIn }).some(message => message.includes('source start')),
     'a changed source in point must fail'
   );
 
@@ -317,32 +317,32 @@ test('readback verification detects every wrong result', () => {
   shiftedTrack[1].items[1].endTicks = (9n * SECOND).toString();
   assert.ok(
     verifyReadback({ expected, actual: shiftedTrack }).some(
-      message => message.includes('Spur A0') && message.includes('Endposition')
+      message => message.includes('Track A0') && message.includes('end position')
     ),
     'a drifting audio track must fail even when video controls the duration'
   );
 
   const unexpected = JSON.parse(JSON.stringify(correct));
   unexpected[0].items.push({ ...unexpected[0].items[0] });
-  assert.ok(verifyReadback({ expected, actual: unexpected }).some(message => message.includes('Elemente')));
+  assert.ok(verifyReadback({ expected, actual: unexpected }).some(message => message.includes('items')));
 
   const missing = JSON.parse(JSON.stringify(correct));
   missing[0].items.pop();
-  assert.ok(verifyReadback({ expected, actual: missing }).some(message => message.includes('Elemente')));
+  assert.ok(verifyReadback({ expected, actual: missing }).some(message => message.includes('items')));
 
   const wrongMedia = JSON.parse(JSON.stringify(correct));
   wrongMedia[0].items[0].mediaPath = '/tmp/other.mov';
-  assert.ok(verifyReadback({ expected, actual: wrongMedia }).some(message => message.includes('anderes Medium')));
+  assert.ok(verifyReadback({ expected, actual: wrongMedia }).some(message => message.includes('different media')));
 
   const wrongIdentity = JSON.parse(JSON.stringify(correct));
   wrongIdentity[0].items[0].projectItemId = 'item-9';
   assert.ok(
-    verifyReadback({ expected, actual: wrongIdentity }).some(message => message.includes('anderes Projektelement'))
+    verifyReadback({ expected, actual: wrongIdentity }).some(message => message.includes('different project item'))
   );
 
   const wrongDisabled = JSON.parse(JSON.stringify(correct));
   wrongDisabled[0].items[0].disabled = true;
-  assert.ok(verifyReadback({ expected, actual: wrongDisabled }).some(message => message.includes('Deaktiviert-Status')));
+  assert.ok(verifyReadback({ expected, actual: wrongDisabled }).some(message => message.includes('disabled state')));
 });
 
 test('original comparison and plan summary', () => {
@@ -350,7 +350,7 @@ test('original comparison and plan summary', () => {
   assert.deepEqual(verifyOriginalUnchanged(before, JSON.parse(JSON.stringify(before))), []);
   const after = JSON.parse(JSON.stringify(before));
   after[0].items[0].startTicks = '1';
-  assert.ok(verifyOriginalUnchanged(before, after).some(message => message.includes('Originalsequenz')));
+  assert.ok(verifyOriginalUnchanged(before, after).some(message => message.includes('original sequence')));
 
   const summary = summarizePlan({
     intervals: [{ startTicks: '0', endTicks: (2n * SECOND).toString() }],
@@ -430,7 +430,7 @@ test('preflight rejects multi item spans and gaps before any mutation', () => {
   assert.deepEqual(preflightPlan({ tracks, intervals: inside }), []);
 
   const spanning = [{ startTicks: (1n * SECOND).toString(), endTicks: (5n * SECOND).toString() }];
-  assert.ok(preflightPlan({ tracks, intervals: spanning }).some(message => message.includes('mehrere Clipstücke')));
+  assert.ok(preflightPlan({ tracks, intervals: spanning }).some(message => message.includes('several clip pieces')));
 
   const inGap = [
     {
@@ -463,7 +463,7 @@ test('preflight rejects multi item spans and gaps before any mutation', () => {
 
   const crossing = [{ startTicks: (1n * SECOND).toString(), endTicks: (3n * SECOND).toString() }];
   assert.ok(
-    preflightPlan({ tracks: inGap, intervals: crossing }).some(message => message.includes('Lücke')),
+    preflightPlan({ tracks: inGap, intervals: crossing }).some(message => message.includes('gap')),
     'a range crossing a gap must be rejected'
   );
 
@@ -588,16 +588,16 @@ test('readback rejects extra tracks and changed speed', () => {
   const expected = expectedKeptItems({ tracks, intervals: [] });
   const withExtra = JSON.parse(JSON.stringify(expected));
   withExtra.push({ kind: 'audio', index: 3, items: [] });
-  assert.ok(verifyReadback({ expected, actual: withExtra }).some(message => message.includes('nicht erwartet')));
+  assert.ok(verifyReadback({ expected, actual: withExtra }).some(message => message.includes('not expected')));
 
   const changedSpeed = JSON.parse(JSON.stringify(expected));
   changedSpeed[0].items[0].speed = 2;
-  assert.ok(verifyReadback({ expected, actual: changedSpeed }).some(message => message.includes('Geschwindigkeit')));
+  assert.ok(verifyReadback({ expected, actual: changedSpeed }).some(message => message.includes('speed')));
 });
 
 test('a host error envelope is a failure, not a success', () => {
-  assert.equal(interpretHostReply('{"ok":false,"error":"Keine aktive Sequenz."}').ok, false);
-  assert.match(interpretHostReply('{"ok":false,"error":"Keine aktive Sequenz."}').error, /Keine aktive Sequenz/);
+  assert.equal(interpretHostReply('{"ok":false,"error":"No active sequence."}').ok, false);
+  assert.match(interpretHostReply('{"ok":false,"error":"No active sequence."}').error, /No active sequence/);
   assert.equal(interpretHostReply('{"ok":true,"tracks":[]}').ok, true);
   assert.equal(interpretHostReply('EvalScript error.').ok, false);
   assert.equal(interpretHostReply('not json').ok, false);
@@ -741,7 +741,7 @@ test('host scripts encode string arguments exactly once', () => {
   const applyArgs = JSON.parse(`[${applyScript.slice(applyScript.indexOf('(') + 1, -1)}]`);
   assert.equal(typeof applyArgs[0], 'string', 'the apply payload is JSON text');
   assert.deepEqual(JSON.parse(applyArgs[0]), payload);
-  assert.throws(() => hostScriptFor('unknown', {}), /Unbekannter Hostaufruf/);
+  assert.throws(() => hostScriptFor('unknown', {}), /Unknown host call/);
 });
 
 test('workflow stops before cloning when the read fails', async () => {
@@ -757,7 +757,7 @@ test('workflow stops when the active sequence is not the analysed one', async ()
   const analyzed = { ...mocks.analyzed, identity: 'doc-1:seq-9' };
   const result = await applyWorkflow({ ...mocks, analyzed });
   assert.equal(result.ok, false);
-  assert.match(result.error, /nicht die analysierte Sequenz/);
+  assert.match(result.error, /not the analysed sequence/);
   assert.deepEqual(mocks.calls, ['readSequence', 'readItems']);
 });
 
@@ -766,7 +766,7 @@ test('workflow stops when the original changed since the analysis', async () => 
   const analyzed = { ...mocks.analyzed, itemFingerprint: '{"ok":true,"tracks":[]}' };
   const result = await applyWorkflow({ ...mocks, analyzed });
   assert.equal(result.ok, false);
-  assert.match(result.error, /seit der Analyse geändert/);
+  assert.match(result.error, /changed since the analysis/);
   assert.deepEqual(mocks.calls, ['readSequence', 'readItems']);
 });
 
@@ -775,7 +775,7 @@ test('workflow stops when the sequence state changed since the analysis', async 
   const analyzed = { ...mocks.analyzed, stateFingerprint: '{"ok":true,"sequenceID":"other"}' };
   const result = await applyWorkflow({ ...mocks, analyzed });
   assert.equal(result.ok, false);
-  assert.match(result.error, /Sequenz hat sich seit der Analyse/);
+  assert.match(result.error, /sequence has changed since the analysis/);
   assert.deepEqual(mocks.calls, ['readSequence']);
 });
 
@@ -783,7 +783,7 @@ test('workflow refuses to cut without readable capabilities', async () => {
   const mocks = hostMocks();
   const result = await applyWorkflow({ ...mocks, capabilities: { canCut: false, blockers: ['x'] } });
   assert.equal(result.ok, false);
-  assert.match(result.error, /gesperrt/);
+  assert.match(result.error, /blocked/);
   assert.deepEqual(mocks.calls, []);
 });
 
@@ -823,7 +823,7 @@ test('unreadable linkage is reported as a limit, not as silence', () => {
     timeRemapReadable: false,
     audioStateReadable: false
   });
-  assert.ok(assessment.warnings.some(message => message.includes('Verknüpfungsstatus')));
+  assert.ok(assessment.warnings.some(message => message.includes('link state')));
   assert.equal(assessment.canCut, false);
 });
 
@@ -841,5 +841,5 @@ test('native partitions preserve speed-dependent source ranges and reject missin
   assert.ok(verifyNativePartitions(original,broken).length);
   const wrong=structuredClone(split);wrong[0].items[1].projectItemId='other';
   assert.ok(verifyNativePartitions(original,wrong).length);
-  assert.throws(()=>expectedAfterNativeCuts({tracks:original,intervals:[{startTicks:'20',endTicks:'40'}]}),/überlappt/);
+  assert.throws(()=>expectedAfterNativeCuts({tracks:original,intervals:[{startTicks:'20',endTicks:'40'}]}),/overlaps/);
 });

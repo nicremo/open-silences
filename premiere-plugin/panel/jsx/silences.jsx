@@ -566,7 +566,7 @@ function os_pad2(value) {
 /** JSON with a clear error when the host has no usable JSON. */
 function os_json(value) {
   if (typeof JSON === 'undefined' || !JSON.stringify) {
-    return '{"ok":false,"error":"JSON ist in dieser ExtendScript Umgebung nicht verfügbar."}';
+    return '{"ok":false,"error":"JSON is not available in this ExtendScript environment."}';
   }
   return JSON.stringify(value);
 }
@@ -601,7 +601,7 @@ function os_flag(read) {
 function os_requiredBoolean(read, field) {
   var result = os_read(read);
   if (result.error) {
-    throw new Error(field + ' ist nicht lesbar: ' + result.error);
+    throw new Error(field + ' is not readable: ' + result.error);
   }
   if (result.value === true || result.value === 1) {
     return true;
@@ -609,7 +609,7 @@ function os_requiredBoolean(read, field) {
   if (result.value === false || result.value === 0) {
     return false;
   }
-  throw new Error(field + ' ist nicht lesbar oder ungültig (' + String(result.value) + ').');
+  throw new Error(field + ' is not readable or invalid (' + String(result.value) + ').');
 }
 
 /**
@@ -621,7 +621,7 @@ function os_compareTicks(first, second) {
   var a = String(first);
   var b = String(second);
   if (!/^[0-9]+$/.test(a) || !/^[0-9]+$/.test(b)) {
-    throw new Error('Tickwert ist keine nicht negative Dezimalzahl: ' + a + ' / ' + b);
+    throw new Error('Tick value is not a non negative decimal number: ' + a + ' / ' + b);
   }
   var trimmedA = a.replace(/^0+(?=[0-9])/, '');
   var trimmedB = b.replace(/^0+(?=[0-9])/, '');
@@ -840,7 +840,7 @@ function os_readClip(clip, trackKind, trackIndex, trackHasTransitions) {
     return clip.outPoint;
   });
   if (start.error || end.error || inPoint.error || outPoint.error) {
-    throw new Error('Clipposition auf ' + trackKind + trackIndex + ' ist nicht lesbar.');
+    throw new Error('Clip position on ' + trackKind + trackIndex + ' is not readable.');
   }
   var sourceIn = os_read(function () {
     return inPoint.value.ticks;
@@ -970,7 +970,7 @@ function os_readItemsOf(sequence) {
           return clip.outPoint.ticks;
         });
         if (start.error || end.error || sourceIn.error || sourceOut.error) {
-          throw new Error('Positionen auf ' + kind + index + ' sind nicht lesbar.');
+          throw new Error('Positions on ' + kind + index + ' are not readable.');
         }
         var projectItem = os_read(function () {
           return clip.projectItem;
@@ -1032,7 +1032,7 @@ function OS_readSequence() {
   try {
     var sequence = app.project.activeSequence;
     if (!sequence) {
-      return os_fail('Keine aktive Sequenz.');
+      return os_fail('No active sequence.');
     }
     var qeSequence = null;
     try {
@@ -1043,7 +1043,7 @@ function OS_readSequence() {
     }
     var frameRate = os_frameRate(sequence);
     if (!frameRate) {
-      return os_fail('Bildrate der Sequenz ist nicht lesbar.');
+      return os_fail('The sequence frame rate is not readable.');
     }
     var zeroPoint = os_read(function () {
       return sequence.zeroPoint;
@@ -1106,7 +1106,7 @@ function OS_readSequence() {
       tracks: tracks
     });
   } catch (error) {
-    return os_fail('Sequenz konnte nicht gelesen werden: ' + String(error));
+    return os_fail('The sequence could not be read: ' + String(error));
   }
 }
 
@@ -1115,11 +1115,11 @@ function OS_readItems() {
   try {
     var sequence = app.project.activeSequence;
     if (!sequence) {
-      return os_fail('Keine aktive Sequenz.');
+      return os_fail('No active sequence.');
     }
     return os_itemEnvelope(sequence);
   } catch (error) {
-    return os_fail('Positionen konnten nicht gelesen werden: ' + String(error));
+    return os_fail('Positions could not be read: ' + String(error));
   }
 }
 
@@ -1127,9 +1127,9 @@ function OS_readItems() {
 function OS_readItemsOfSequence(sequenceId) {
   try {
     var sequence = os_findSequence(sequenceId);
-    if (!sequence) return os_fail('Die geschützte Sequenz wurde nicht gefunden.');
+    if (!sequence) return os_fail('The protected sequence was not found.');
     return os_itemEnvelope(sequence);
-  } catch (error) { return os_fail('Sequenzprüfung fehlgeschlagen: ' + String(error)); }
+  } catch (error) { return os_fail('Sequence check failed: ' + String(error)); }
 }
 
 /** Selection is read separately from clip provenance and never inferred. */
@@ -1168,22 +1168,22 @@ function OS_prepareCut(payloadJson) {
   try {
     var payload = JSON.parse(payloadJson);
     if (!target || os_identity(target) !== payload.expectedIdentity || OS_readSequence() !== payload.expectedStateFingerprint ||
-        os_itemEnvelope(target) !== payload.expectedItemFingerprint) return os_fail('Die Auswahl hat sich geändert. Bitte Bereich erneut wählen.');
+        os_itemEnvelope(target) !== payload.expectedItemFingerprint) return os_fail('The selection has changed. Please choose the range again.');
     var cloned = JSON.parse(OS_cloneSequence(payload.expectedIdentity, payload.expectedItemFingerprint));
     if (!cloned.ok) return os_fail(cloned.error);
     var backup = app.project.activeSequence;
     if (String(backup.sequenceID) === String(target.sequenceID) ||
-        os_json(os_readItemsOf(backup)) !== os_json(os_readItemsOf(target))) return os_fail('Das Backup stimmt nicht mit der Sequenz überein.');
+        os_json(os_readItemsOf(backup)) !== os_json(os_readItemsOf(target))) return os_fail('The backup does not match the sequence.');
     var stamp = new Date();
     backup.name = String(target.name) + ' - Backup ' + stamp.getFullYear() + '-' + (stamp.getMonth()+1) + '-' + stamp.getDate() + ' ' + stamp.getHours() + ':' + stamp.getMinutes() + ':' + stamp.getSeconds();
     var bin = os_pluginBin('Open Silences Backups');
-    if (!bin) return os_fail('Der Backup-Ordner konnte nicht angelegt werden.');
+    if (!bin) return os_fail('The backup bin could not be created.');
     backup.projectItem.moveBin(bin);
     var backupItems = os_itemEnvelope(backup);
-    if (os_itemEnvelope(target) !== payload.expectedItemFingerprint) return os_fail('Die Sequenz hat sich beim Backup geändert.');
+    if (os_itemEnvelope(target) !== payload.expectedItemFingerprint) return os_fail('The sequence changed during the backup.');
     return os_json({ok:true, backupId:String(backup.sequenceID), backupName:String(backup.name), backupItems:backupItems,
       targetId:String(target.sequenceID), targetIdentity:os_identity(target), targetItems:os_itemEnvelope(target)});
-  } catch (error) { return os_fail('Backup fehlgeschlagen: ' + String(error)); }
+  } catch (error) { return os_fail('Backup failed: ' + String(error)); }
   finally { if (target) app.project.openSequence(target.sequenceID); }
 }
 
@@ -1196,22 +1196,22 @@ function OS_prepareCut(payloadJson) {
 function OS_cloneSequence(expectedIdentity, expectedFingerprint) {
   try {
     if (!expectedIdentity || !expectedFingerprint) {
-      return os_fail('Erwartete Kennung oder Fingerabdruck fehlt, es wird nichts geklont.');
+      return os_fail('Expected identity or fingerprint is missing, nothing is cloned.');
     }
     var original = app.project.activeSequence;
     if (!original) {
-      return os_fail('Keine aktive Sequenz.');
+      return os_fail('No active sequence.');
     }
     var originalIdentity = os_identity(original);
     if (!originalIdentity) {
-      return os_fail('Die Kennung der Originalsequenz ist nicht lesbar.');
+      return os_fail('The identity of the original sequence is not readable.');
     }
     if (expectedIdentity && originalIdentity !== expectedIdentity) {
-      return os_fail('Die aktive Sequenz ist nicht die analysierte Sequenz. Es wird nichts geklont.');
+      return os_fail('The active sequence is not the analysed sequence. Nothing is cloned.');
     }
     var originalItems = os_itemEnvelope(original);
     if (expectedFingerprint && originalItems !== expectedFingerprint) {
-      return os_fail('Die Originalsequenz hat sich seit der Analyse geändert. Es wird nichts geklont.');
+      return os_fail('The original sequence has changed since the analysis. Nothing is cloned.');
     }
     var idsBefore = os_sequenceIds();
 
@@ -1219,7 +1219,7 @@ function OS_cloneSequence(expectedIdentity, expectedFingerprint) {
       return original.clone();
     });
     if (cloned.error) {
-      return os_fail('Sequenz konnte nicht geklont werden: ' + cloned.error);
+      return os_fail('The sequence could not be cloned: ' + cloned.error);
     }
 
     var idsAfter = os_sequenceIds();
@@ -1237,18 +1237,18 @@ function OS_cloneSequence(expectedIdentity, expectedFingerprint) {
       }
     }
     if (!cloneId) {
-      return os_fail('Die neue Sequenzkopie ließ sich nicht bestimmen.');
+      return os_fail('The new sequence copy could not be identified.');
     }
     if (!app.project.openSequence(String(cloneId))) {
-      return os_fail('Die Sequenzkopie konnte nicht geöffnet werden, es wird nichts geschnitten.');
+      return os_fail('The sequence copy could not be opened, nothing is cut.');
     }
     var active = app.project.activeSequence;
     if (!active || String(active.sequenceID) !== String(cloneId)) {
-      return os_fail('Die Sequenzkopie ist nicht aktiv, es wird nichts geschnitten.');
+      return os_fail('The sequence copy is not active, nothing is cut.');
     }
     var cloneIdentity = os_identity(active);
     if (!cloneIdentity) {
-      return os_fail('Die Kennung der Sequenzkopie ist nicht lesbar.');
+      return os_fail('The identity of the sequence copy is not readable.');
     }
     var cloneItems = os_itemEnvelope(active);
     return os_json({
@@ -1261,10 +1261,10 @@ function OS_cloneSequence(expectedIdentity, expectedFingerprint) {
       cloneName: String(active.name),
       originalItems: originalItems,
       cloneItems: cloneItems,
-      message: 'Kopie als neue Sequenz erstellt und geöffnet.'
+      message: 'Copy created and opened as a new sequence.'
     });
   } catch (error) {
-    return os_fail('Kopie konnte nicht erstellt werden: ' + String(error));
+    return os_fail('The copy could not be created: ' + String(error));
   }
 }
 
@@ -1360,7 +1360,7 @@ function os_planShifts(tracks, intervals) {
     for (var i = 0; i < tracks[t].items.length; i++) {
       var item = tracks[t].items[i];
       if (previous !== null && os_compareTicks(item.startTicks, previous) < 0) {
-        throw new Error('Die Clips einer Spur sind nicht zeitlich sortiert.');
+        throw new Error('The clips of a track are not sorted by time.');
       }
       previous = item.startTicks;
       while (
@@ -1400,7 +1400,7 @@ function os_applyShifts(sequence, shifts) {
     var collection = shift.kind === 'video' ? sequence.videoTracks : sequence.audioTracks;
     var track = collection[shift.index];
     if (!track || shift.slot >= track.clips.numItems) {
-      return { ok: false, moved: moved, error: 'Ein Clip auf ' + shift.key + ' fehlt vor dem Verschieben.' };
+      return { ok: false, moved: moved, error: 'A clip on ' + shift.key + ' is missing before the move.' };
     }
     var clip = track.clips[shift.slot];
     if (String(clip.start.ticks) !== shift.startTicks) {
@@ -1410,7 +1410,7 @@ function os_applyShifts(sequence, shifts) {
     delta.ticks = '-' + shift.offsetTicks;
     clip.move(delta);
     if (String(clip.start.ticks) === shift.startTicks) {
-      return { ok: false, moved: moved, error: 'Ein Clip auf ' + shift.key + ' ließ sich nicht verschieben.' };
+      return { ok: false, moved: moved, error: 'A clip on ' + shift.key + ' could not be moved.' };
     }
     moved++;
   }
@@ -1457,7 +1457,7 @@ function OS_applyPlan(payloadJson) {
     var payload = JSON.parse(payloadJson);
     var plan = payload.plan;
     if (!plan || !plan.intervals) {
-      return os_fail('Kein gültiger Schnittplan.');
+      return os_fail('No valid cut plan.');
     }
     if (
       !payload.expectedOriginalId ||
@@ -1465,46 +1465,46 @@ function OS_applyPlan(payloadJson) {
       !payload.expectedOriginalFingerprint ||
       !payload.expectedCloneFingerprint
     ) {
-      return os_fail('Der Auftrag hat keine vollständigen Kennungen und Fingerabdrücke. Es wird nichts geschnitten.');
+      return os_fail('The request has no complete identities and fingerprints. Nothing is cut.');
     }
     var active = app.project.activeSequence;
     if (!active) {
-      return os_fail('Keine aktive Sequenz.');
+      return os_fail('No active sequence.');
     }
     var activeIdentity = os_identity(active);
     if (!activeIdentity || activeIdentity !== payload.expectedCloneIdentity) {
-      return os_fail('Die aktive Sequenz ist nicht die erwartete Kopie. Es wird nichts geschnitten.');
+      return os_fail('The active sequence is not the expected copy. Nothing is cut.');
     }
     var original = os_findSequence(payload.expectedOriginalId);
     if (!original) {
-      return os_fail('Die Originalsequenz wurde nicht gefunden.');
+      return os_fail('The original sequence was not found.');
     }
     if (String(original.sequenceID) === String(active.sequenceID)) {
-      return os_fail('Original und Ziel sind dieselbe Sequenz. Es wird nichts geschnitten.');
+      return os_fail('Original and target are the same sequence. Nothing is cut.');
     }
     var originalItems = os_itemEnvelope(original);
     if (payload.expectedOriginalFingerprint !== originalItems) {
-      return os_fail('Die Originalsequenz hat sich seit dem Lesen geändert. Es wird nichts geschnitten.');
+      return os_fail('The original sequence has changed since it was read. Nothing is cut.');
     }
     var cloneItems = os_itemEnvelope(active);
     if (payload.expectedCloneFingerprint !== cloneItems) {
-      return os_fail('Die Kopie hat sich seit dem Lesen geändert. Es wird nichts geschnitten.');
+      return os_fail('The copy has changed since it was read. Nothing is cut.');
     }
     if (payload.expectedStateFingerprint && OS_readSequence() !== payload.expectedStateFingerprint) {
-      return os_fail('Die Spuren oder Einstellungen haben sich vor dem Schnitt geändert.');
+      return os_fail('The tracks or settings changed before the cut.');
     }
     if (plan.intervals.length === 0) {
-      return os_json({ ok: true, applied: 0, message: 'Keine Stillen zu schneiden.' });
+      return os_json({ ok: true, applied: 0, message: 'No silences to cut.' });
     }
 
     app.enableQE();
     var qeSequence = qe.project.getActiveSequence();
     if (!qeSequence) {
-      return os_fail('QE Zugriff nicht verfügbar, es wird nichts geschnitten.');
+      return os_fail('QE access is not available, nothing is cut.');
     }
     var frameRate = os_frameRate(active);
     if (!frameRate || !os_cutRateSupported(frameRate)) {
-      return os_fail('Diese Bildrate ist nicht belegt, es wird nichts geschnitten.');
+      return os_fail('This frame rate is not proven, nothing is cut.');
     }
 
     // Plan lookups built once: interval to tracks and razor tick to tracks.
@@ -1543,7 +1543,7 @@ function OS_applyPlan(payloadJson) {
         }
       }
       if (drivers !== 1) {
-        return os_fail('Der Plan hat ' + drivers + ' Ripple Spuren für einen Bereich. Es wird nichts geschnitten.');
+        return os_fail('The plan has ' + drivers + ' ripple tracks for one range. Nothing is cut.');
       }
       for (var checkIndex = 0; checkIndex < tracks.length; checkIndex++) {
         var covering = os_coveringSnapshot(
@@ -1551,11 +1551,11 @@ function OS_applyPlan(payloadJson) {
           interval
         );
         if (covering.length === 0) {
-          return os_fail('Ein Bereich liegt auf ' + tracks[checkIndex].key + ' in keiner Passage.');
+          return os_fail('A range on ' + tracks[checkIndex].key + ' lies in no clip.');
         }
         if (covering.length > 1) {
           return os_fail(
-            'Ein Bereich liegt auf ' + tracks[checkIndex].key + ' über mehrere Clipstücke. Das ist nicht belegt.'
+            'A range on ' + tracks[checkIndex].key + ' spans several clip pieces. That is not proven.'
           );
         }
         if (
@@ -1563,7 +1563,7 @@ function OS_applyPlan(payloadJson) {
           os_compareTicks(String(covering[0].endTicks), String(interval.endTicks)) < 0
         ) {
           return os_fail(
-            'Ein Bereich reicht auf ' + tracks[checkIndex].key + ' über eine Lücke oder einen Cliprand hinaus.'
+            'A range on ' + tracks[checkIndex].key + ' reaches across a gap or a clip edge.'
           );
         }
       }
@@ -1581,7 +1581,7 @@ function OS_applyPlan(payloadJson) {
         timecode = os_timecodeFromFrames(Number(point.frame), frameRate.fps);
       }
       if (!timecode) {
-        return os_fail('Ein Schnittpunkt ist als Zeitcode nicht darstellbar.');
+        return os_fail('A cut point cannot be expressed as a timecode.');
       }
       var needed = planIndex.tracksAt(point.ticks);
       for (var neededKey in needed) {
@@ -1601,7 +1601,7 @@ function OS_applyPlan(payloadJson) {
             qeSequence.getAudioTrackAt(razorTrack.index).razor(timecode, true, true);
           }
         } catch (razorError) {
-          return os_fail('Schnitt bei ' + timecode + ' fehlgeschlagen: ' + String(razorError));
+          return os_fail('Cut at ' + timecode + ' failed: ' + String(razorError));
         }
       }
     }
@@ -1621,7 +1621,7 @@ function OS_applyPlan(payloadJson) {
             var syncTrack = syncKinds[sk] === 'video' ? qeSequence.getVideoTrackAt(si) : qeSequence.getAudioTrackAt(si);
             if (syncTrack.isLocked()) continue;
             syncTrack.setSyncLock(true);
-            if (!syncTrack.isSyncLocked()) return os_fail('Sync Lock auf der Kopie konnte nicht aktiviert werden.');
+            if (!syncTrack.isSyncLocked()) return os_fail('Sync lock could not be enabled on the copy.');
           }
         }
       }
@@ -1637,9 +1637,9 @@ function OS_applyPlan(payloadJson) {
         var exactKey = String(exactInterval.startTicks) + '-' + String(exactInterval.endTicks);
         if (!trackSlots || !trackSlots.hasOwnProperty(exactKey)) {
           return os_fail(
-            'Nach dem Schnitt fehlt das exakte Mittelstück auf ' +
+            'After the cut the exact middle piece is missing on ' +
               exactTracks[exactTrackIndex].key +
-              '. Es wird nichts entfernt.'
+              '. Nothing is removed.'
           );
         }
       }
@@ -1657,7 +1657,7 @@ function OS_applyPlan(payloadJson) {
         }
         for (var lockItem = 0; lockItem < lockTrack.items.length; lockItem++) {
           if (os_compareTicks(lockTrack.items[lockItem].startTicks, firstEnd) >= 0) {
-            return os_fail('Eine gesperrte Spur müsste verschoben werden. Es wird nichts entfernt.');
+            return os_fail('A locked track would have to move. Nothing is removed.');
           }
         }
       }
@@ -1685,13 +1685,13 @@ function OS_applyPlan(payloadJson) {
           current
         );
         if (!item) {
-          return os_fail('Das Mittelstück fehlt vor dem Entfernen. Abbruch nach ' + removed + ' Elementen.');
+          return os_fail('The middle piece is missing before removal. Stopped after ' + removed + ' items.');
         }
         try {
           item.remove(useRipple && task.ripple === true, true);
           removed++;
         } catch (removeError) {
-          return os_fail('Entfernen fehlgeschlagen: ' + String(removeError));
+          return os_fail('Removal failed: ' + String(removeError));
         }
       }
     }
@@ -1702,7 +1702,7 @@ function OS_applyPlan(payloadJson) {
       var shiftResult = os_applyShifts(active, shifts);
       if (!shiftResult.ok) {
         return os_fail(
-          shiftResult.error + ' Abbruch nach ' + removed + ' entfernten und ' + shiftResult.moved + ' verschobenen Elementen.'
+          shiftResult.error + ' Stopped after ' + removed + ' removed and ' + shiftResult.moved + ' moved items.'
         );
       }
       moved = shiftResult.moved;
@@ -1716,7 +1716,7 @@ function OS_applyPlan(payloadJson) {
       message: removed + ' Elemente entfernt, ' + intervals.length + ' Bereiche geschnitten.'
     });
   } catch (error) {
-    return os_fail('Schnittplan konnte nicht angewendet werden: ' + String(error));
+    return os_fail('The cut plan could not be applied: ' + String(error));
   }
 }
 
@@ -1739,54 +1739,54 @@ function OS_renderAudio(payloadJson) {
     if (!original || os_identity(original) !== payload.expectedIdentity ||
         os_itemEnvelope(original) !== payload.expectedItemFingerprint ||
         OS_readSequence() !== payload.expectedStateFingerprint) {
-      return os_fail('Die Sequenz hat sich vor dem Audioexport geändert.');
+      return os_fail('The sequence changed before the audio export.');
     }
     var preset = os_wavePreset();
-    if (!preset) return os_fail('Das mitgelieferte WAV-Preset wurde nicht gefunden.');
+    if (!preset) return os_fail('The bundled WAV preset was not found.');
     var output = new File(payload.outputPath);
     if (output.exists || !output.parent.exists || !/\.wav$/i.test(output.fsName)) {
-      return os_fail('Der Audioexport benötigt eine neue WAV-Datei in einem vorhandenen Ordner.');
+      return os_fail('The audio export needs a new WAV file in an existing folder.');
     }
     var selected = {}, count = 0;
     for (var i = 0; i < payload.analysisTracks.length; i++) {
       var ref = payload.analysisTracks[i];
       if (ref.kind !== 'audio' || ref.index < 0 || ref.index >= original.audioTracks.numTracks || selected[ref.index]) {
-        return os_fail('Die gewählten Analysespuren sind ungültig.');
+        return os_fail('The chosen analysis tracks are invalid.');
       }
       var state = os_trackState(original, qe.project.getActiveSequence(), 'audio', ref.index);
-      if (state.locked !== false || state.muted !== false) return os_fail('Eine Analysespur ist gesperrt oder stumm.');
+      if (state.locked !== false || state.muted !== false) return os_fail('An analysis track is locked or muted.');
       selected[ref.index] = true; count++;
     }
-    if (!count) return os_fail('Keine Audiospur für den Export gewählt.');
+    if (!count) return os_fail('No audio track chosen for the export.');
     var clone = JSON.parse(OS_cloneSequence(payload.expectedIdentity, payload.expectedItemFingerprint));
     if (!clone.ok) return os_fail(clone.error);
     var copy = app.project.activeSequence;
-    copy.name = String(original.name) + ' - Open Silences Analyse';
-    var analysisBin = os_pluginBin('Open Silences Analysen');
-    if (!analysisBin) return os_fail('Analyseordner konnte nicht angelegt werden.');
+    copy.name = String(original.name) + ' - Open Silences Analysis';
+    var analysisBin = os_pluginBin('Open Silences Analysis');
+    if (!analysisBin) return os_fail('The analysis bin could not be created.');
     copy.projectItem.moveBin(analysisBin);
     for (var t = 0; t < copy.audioTracks.numTracks; t++) {
       copy.audioTracks[t].setMute(selected[t] ? 0 : 1);
       if (Boolean(copy.audioTracks[t].isMuted()) !== !selected[t]) {
-        return os_fail('Die Audiospuren der Analysekopie konnten nicht isoliert werden.');
+        return os_fail('The audio tracks of the analysis copy could not be isolated.');
       }
     }
     var started = new Date().getTime();
     var status = copy.exportAsMediaDirect(output.fsName, preset, 0);
     output = new File(payload.outputPath);
-    if (!output.exists || output.length < 44) return os_fail('Premiere hat keine gültige Audiodatei exportiert: ' + String(status));
-    if (os_itemEnvelope(original) !== payload.expectedItemFingerprint) return os_fail('Original während des Exports geändert.');
+    if (!output.exists || output.length < 44) return os_fail('Premiere did not export a valid audio file: ' + String(status));
+    if (os_itemEnvelope(original) !== payload.expectedItemFingerprint) return os_fail('The original changed during the export.');
     return os_json({ok:true, mediaPath:output.fsName, analysisTracks:payload.analysisTracks,
       renderMilliseconds:new Date().getTime()-started, analysisSequenceId:copy.sequenceID, bytes:output.length});
-  } catch (error) { return os_fail('Audioexport fehlgeschlagen: ' + String(error)); }
+  } catch (error) { return os_fail('Audio export failed: ' + String(error)); }
   finally { if (original) app.project.openSequence(original.sequenceID); }
 }
 
 /** Prove razor partitioning before deleting anything. No source-time guessing. */
 function os_validateNativePartitions(original, split) {
-  if (original.length !== split.length) return 'Spuranzahl nach dem Schnitt geändert.';
+  if (original.length !== split.length) return 'The track count changed after the cut.';
   for (var t = 0; t < original.length; t++) {
-    if (original[t].kind !== split[t].kind || original[t].index !== split[t].index) return 'Spurzuordnung nach dem Schnitt geändert.';
+    if (original[t].kind !== split[t].kind || original[t].index !== split[t].index) return 'The track mapping changed after the cut.';
     var used = 0;
     for (var i = 0; i < original[t].items.length; i++) {
       var item = original[t].items[i], cursor = item.startTicks, sourceCursor = item.sourceInTicks;
@@ -1795,12 +1795,12 @@ function os_validateNativePartitions(original, split) {
         if (os_compareTicks(part.startTicks, item.startTicks) < 0 || os_compareTicks(part.endTicks, item.endTicks) > 0) continue;
         if (part.startTicks !== cursor || part.sourceInTicks !== sourceCursor ||
             part.mediaPath !== item.mediaPath || part.projectItemId !== item.projectItemId || part.disabled !== item.disabled ||
-            os_compareTicks(part.endTicks, part.startTicks) <= 0) return 'Ein natives Schnittstück hat eine unerwartete Zuordnung.';
+            os_compareTicks(part.endTicks, part.startTicks) <= 0) return 'A native cut piece has an unexpected mapping.';
         cursor = part.endTicks; sourceCursor = part.sourceOutTicks; used++;
       }
-      if (cursor !== item.endTicks || sourceCursor !== item.sourceOutTicks) return 'Der Schnitt bewahrt den vollständigen Quellbereich nicht.';
+      if (cursor !== item.endTicks || sourceCursor !== item.sourceOutTicks) return 'The cut does not keep the full source range.';
     }
-    if (used !== split[t].items.length) return 'Zusätzliche Schnittstücke nach dem nativen Schnitt.';
+    if (used !== split[t].items.length) return 'Extra cut pieces after the native cut.';
   }
   return null;
 }

@@ -204,7 +204,7 @@ test('a stale original fingerprint stops the clone before it is created', () => 
     hostScriptFor('clone', { expectedIdentity: originalEnvelope.identity, expectedItemFingerprint: stale })
   );
   assert.equal(clone.ok, false);
-  assert.match(clone.error, /geändert/);
+  assert.match(clone.error, /changed/);
   assert.equal(project.sequences.count(), 1, 'no copy was created');
   assert.deepEqual(mutations.razors, []);
   assert.deepEqual(mutations.removes, []);
@@ -214,7 +214,7 @@ test('apply refuses an incomplete payload and never touches the timeline', () =>
   const sandbox = createHost();
   const empty = evalHost(sandbox, hostScriptFor('apply', { plan: { intervals: [] } }));
   assert.equal(empty.ok, false);
-  assert.match(empty.error, /Kennungen und Fingerabdrücke/);
+  assert.match(empty.error, /identities and fingerprints/);
 
   const withPlan = evalHost(
     sandbox,
@@ -251,7 +251,7 @@ test('apply refuses when original and target are the same sequence', () => {
     })
   );
   assert.equal(applied.ok, false);
-  assert.match(applied.error, /nicht die erwartete Kopie|dieselbe Sequenz/);
+  assert.match(applied.error, /not the expected copy|same sequence/);
   assert.deepEqual(mutations.razors, []);
   assert.deepEqual(mutations.removes, []);
 });
@@ -281,7 +281,7 @@ test('apply refuses when the clone was changed after the clone call', () => {
     })
   );
   assert.equal(applied.ok, false);
-  assert.match(applied.error, /Kopie hat sich seit dem Lesen geändert/);
+  assert.match(applied.error, /copy has changed since it was read/);
   assert.deepEqual(mutations.razors, []);
   assert.deepEqual(mutations.removes, []);
 });
@@ -293,8 +293,8 @@ test('tick comparison stays exact beyond 2^53 and linkage stays unknown', () => 
   assert.equal(compare('10000000000000002', '10000000000000001'), 1);
   assert.equal(compare('100000000000000020000', '100000000000000019999'), 1);
   assert.equal(compare('00042', '42'), 0);
-  assert.throws(() => compare('-1', '0'), /nicht negative Dezimalzahl/);
-  assert.throws(() => compare('abc', '0'), /nicht negative Dezimalzahl/);
+  assert.throws(() => compare('-1', '0'), /non negative decimal/);
+  assert.throws(() => compare('abc', '0'), /non negative decimal/);
 
   // The preflight reads the same comparison from the plain clone snapshot.
   const items = [{ startTicks: '10000000000000000', endTicks: '10000000000000100' }];
@@ -342,7 +342,7 @@ test('changed host state stops the cut before any razor even when positions matc
   expectedOriginalFingerprint:copy.originalItems,expectedCloneFingerprint:copy.cloneItems,
   expectedStateFingerprint:'old state',nativeTimeline:true
  }));
- assert.equal(reply.ok,false);assert.match(reply.error,/Spuren oder Einstellungen/);
+ assert.equal(reply.ok,false);assert.match(reply.error,/tracks or settings/);
  assert.deepEqual(mutations.razors,[]);assert.deepEqual(mutations.removes,[]);
 });
 
@@ -446,7 +446,7 @@ test('shift planning moves every later item by the time removed before it', () =
   ]);
   assert.deepEqual(shifts.map(s => s.startTicks), ['20', '20', '40']);
   sandbox.tracks = [{ kind: 'video', index: 0, items: [{ startTicks: '20', endTicks: '30' }, { startTicks: '0', endTicks: '10' }] }];
-  assert.throws(() => vm.runInContext('os_planShifts(tracks, intervals)', sandbox), /zeitlich sortiert/);
+  assert.throws(() => vm.runInContext('os_planShifts(tracks, intervals)', sandbox), /sorted by time/);
 });
 
 test('shift moves skip items a linked partner already moved and stop on a failed move', () => {
@@ -488,5 +488,5 @@ test('shift moves skip items a linked partner already moved and stop on a failed
   sandbox.shifts = [{ key: 'video0', kind: 'video', index: 0, slot: 0, startTicks: '20', offsetTicks: '10' }];
   const failed = JSON.parse(vm.runInContext('JSON.stringify(os_applyShifts(sequence, shifts))', sandbox));
   assert.equal(failed.ok, false);
-  assert.match(failed.error, /verschieben/);
+  assert.match(failed.error, /moved/);
 });

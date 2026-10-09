@@ -47,22 +47,22 @@ export function normalizeTicks(value) {
   if (typeof value === 'string') {
     const trimmed = value.trim();
     if (!TICK_PATTERN.test(trimmed)) {
-      throw new Error(`Ungültiger Tickwert: ${value}`);
+      throw new Error(`Invalid tick value: ${value}`);
     }
     return BigInt(trimmed).toString();
   }
   if (typeof value === 'number') {
     if (!Number.isFinite(value) || !Number.isInteger(value)) {
-      throw new Error(`Ungültiger Tickwert: ${value}`);
+      throw new Error(`Invalid tick value: ${value}`);
     }
     if (!Number.isSafeInteger(value)) {
       throw new Error(
-        `Tickwert ${value} überschreitet die sichere Zahlengrenze, bitte als Zeichenkette übergeben.`
+        `Tick value ${value} exceeds the safe integer range, pass it as a string.`
       );
     }
     return BigInt(value).toString();
   }
-  throw new Error(`Ungültiger Tickwert: ${String(value)}`);
+  throw new Error(`Invalid tick value: ${String(value)}`);
 }
 
 export function toBigIntTicks(value) {
@@ -98,14 +98,14 @@ export function ticksToSeconds(ticks) {
 
 export function ticksPerFrameFor(fpsNumerator, fpsDenominator) {
   if (!Number.isInteger(fpsNumerator) || !Number.isInteger(fpsDenominator)) {
-    throw new Error('Die Bildrate muss als ganzzahliger Zähler und Nenner vorliegen.');
+    throw new Error('The frame rate must be given as an integer numerator and denominator.');
   }
   if (fpsNumerator <= 0 || fpsDenominator <= 0) {
-    throw new Error('Die Bildrate muss positiv sein.');
+    throw new Error('The frame rate must be positive.');
   }
   const ticks = (TICKS_PER_SECOND * BigInt(fpsDenominator) + BigInt(Math.floor(fpsNumerator / 2))) / BigInt(fpsNumerator);
   if (ticks <= 0n || ticks > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new Error('Die Bildrate ergibt eine ungültige Tickgröße.');
+    throw new Error('The frame rate gives an invalid tick size.');
   }
   return Number(ticks);
 }
@@ -120,11 +120,11 @@ export function frameRateFor(fpsNumerator, fpsDenominator) {
  */
 export function framesFromTicks(ticks, ticksPerFrame) {
   if (!Number.isInteger(ticksPerFrame) || ticksPerFrame <= 0) {
-    throw new Error('Ungültige Tickgröße je Bild.');
+    throw new Error('Invalid tick size per frame.');
   }
   const frames = toBigIntTicks(ticks) / BigInt(ticksPerFrame);
   if (frames > BigInt(Number.MAX_SAFE_INTEGER) || frames < -BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new Error('Bildanzahl außerhalb des sicheren Bereichs.');
+    throw new Error('Frame count outside the safe range.');
   }
   return Number(frames);
 }
@@ -186,11 +186,11 @@ export function requiredBoolean(read, field) {
   try {
     value = read();
   } catch (error) {
-    throw new Error(`${field} ist nicht lesbar: ${error}`);
+    throw new Error(`${field} is not readable: ${error}`);
   }
   const normalized = normalizeBoolean(value);
   if (normalized === undefined) {
-    throw new Error(`${field} ist nicht lesbar oder ungültig (${String(value)}).`);
+    throw new Error(`${field} is not readable or invalid (${String(value)}).`);
   }
   return normalized;
 }
@@ -251,13 +251,13 @@ export function buildSnapshot({
   selectedSections = null
 }) {
   if (!sequence || !Number.isInteger(sequence.fpsNumerator) || !Number.isInteger(sequence.fpsDenominator)) {
-    throw new Error('Die Bildrate der Sequenz fehlt.');
+    throw new Error('The sequence frame rate is missing.');
   }
   if (!Array.isArray(tracks) || tracks.length === 0) {
-    throw new Error('Der Schnappschuss enthält keine Spuren.');
+    throw new Error('The snapshot contains no tracks.');
   }
   if (!Array.isArray(analysisTracks) || analysisTracks.length === 0) {
-    throw new Error('Es ist keine Analysespur gewählt.');
+    throw new Error('No analysis track is selected.');
   }
   return {
     ...(selectedSections ? { selectedSections } : {}),
@@ -274,18 +274,18 @@ export function buildSnapshot({
     tracks: tracks.map(track => {
       const kind = track.kind === 'video' || track.kind === 'audio' ? track.kind : null;
       if (!kind) {
-        throw new Error(`Unbekannte Spurenart: ${String(track.kind)}`);
+        throw new Error(`Unknown track kind: ${String(track.kind)}`);
       }
       if (!Number.isInteger(track.index)) {
-        throw new Error('Spurindex fehlt.');
+        throw new Error('Track index is missing.');
       }
       const locked = normalizeBoolean(track.locked);
       const muted = normalizeBoolean(track.muted);
       if (locked === undefined) {
-        throw new Error(`Sperrstatus von ${kind}${track.index} ist nicht lesbar.`);
+        throw new Error(`Lock state of ${kind}${track.index} is not readable.`);
       }
       if (muted === undefined) {
-        throw new Error(`Stummschaltung von ${kind}${track.index} ist nicht lesbar.`);
+        throw new Error(`Mute state of ${kind}${track.index} is not readable.`);
       }
       return {
         kind,
@@ -298,13 +298,13 @@ export function buildSnapshot({
           const disabled = normalizeBoolean(clip.disabled);
           const linked = normalizeBoolean(clip.linked);
           if (disabled === undefined) {
-            throw new Error(`Deaktiviert-Status von ${clip.id} ist nicht lesbar.`);
+            throw new Error(`Disabled state of ${clip.id} is not readable.`);
           }
           if (linked === undefined && !renderedMixdown) {
-            throw new Error(`Verknüpfungsstatus von ${clip.id} ist nicht lesbar.`);
+            throw new Error(`Link state of ${clip.id} is not readable.`);
           }
           if (clip.mediaPath !== null && typeof clip.mediaPath !== 'string') {
-            throw new Error(`Medienpfad von ${clip.id} ist ungültig.`);
+            throw new Error(`Media path of ${clip.id} is invalid.`);
           }
           return {
             id: clip.id,
@@ -358,55 +358,55 @@ export function assessCapabilities(sequence) {
   const blockers = [];
   const warnings = [];
   if (!sequence || sequence.ok !== true) {
-    return { readable, blockers: ['Die Sequenz konnte nicht gelesen werden.'], warnings, canCut: false };
+    return { readable, blockers: ['The sequence could not be read.'], warnings, canCut: false };
   }
   if (sequence.qeAvailable === true) {
-    readable.push('QE Zugriff für den Schnitt');
+    readable.push('QE access for cutting');
   } else {
-    blockers.push('QE Zugriff für den Schnitt ist nicht bestätigt.');
+    blockers.push('QE access for cutting is not confirmed.');
   }
   if (sequence.fpsSupported === true) {
     readable.push(`Bildrate ${sequence.fps ?? sequence.fpsNumerator / sequence.fpsDenominator}`);
   } else if (sequence.fpsObserved === false) {
-    blockers.push('Nur 25 Bilder pro Sekunde ist auf diesem Host belegt. Diese Rate ist es nicht.');
+    blockers.push('Only 25 frames per second is proven on this host. This rate is not.');
   } else {
-    blockers.push('Diese Bildrate ist nicht belegt (Drop Frame oder ungewöhnliche Rate).');
+    blockers.push('This frame rate is not proven (drop frame or an unusual rate).');
   }
   if (sequence.sourceTicksReadable === true) {
-    readable.push('Quellbereich in Ticks');
+    readable.push('Source range in ticks');
   } else {
-    blockers.push('Der Quellbereich der Clips ist nicht in Ticks lesbar.');
+    blockers.push('The source range of the clips is not readable in ticks.');
   }
   if (sequence.mediaIdentityReadable === true) {
-    readable.push('Medienzuordnung der Clips');
+    readable.push('Media identity of the clips');
   } else {
-    blockers.push('Die Medienzuordnung der Clips ist nicht lesbar.');
+    blockers.push('The media identity of the clips is not readable.');
   }
   if (sequence.nativeTimelineAvailable === true) {
-    readable.push('Nativer Audioexport der Timeline und nativer Schnitt auf einer Kopie');
+    readable.push('Native timeline audio export and native cutting on a copy');
   } else if (sequence.timeRemapReadable === true) {
-    readable.push('Zeitlupen- oder Remap-Status');
+    readable.push('Speed or time remap state');
   } else {
-    blockers.push('Der Zeitlupen- oder Remap-Status ist im Host nicht lesbar.');
+    blockers.push('The speed or time remap state is not readable in the host.');
   }
   if (sequence.nativeTimelineAvailable === true) {
-    readable.push('Lautstärke, Effekte und Kanalzuordnung im gerenderten Audio');
+    readable.push('Volume, effects and channel mapping in the rendered audio');
   } else if (sequence.audioStateReadable === true) {
-    readable.push('Lautstärke, Effekte und Kanalzuordnung');
+    readable.push('Volume, effects and channel mapping');
   } else {
     blockers.push(
-      'Lautstärke, Audioeffekte und Kanalzuordnung der Clips sind im Host nicht lesbar. ' +
-        'Ohne gerenderte Mischung ist eine Rohquellenanalyse dafür keine Grundlage.'
+      'Volume, audio effects and channel mapping of the clips are not readable in the host. ' +
+        'Without a rendered mix, raw source analysis is no basis for them.'
     );
   }
   if (sequence.nativeTimelineAvailable === true) {
-    readable.push('Schnitt aller betroffenen Spuren mit vollständiger Nachprüfung');
+    readable.push('Cutting all affected tracks with a full readback');
   } else if (sequence.linkedReadable === true) {
-    readable.push('Verknüpfungsstatus der Clips');
+    readable.push('Link state of the clips');
   } else {
     warnings.push(
-      'Der Verknüpfungsstatus einzelner Clips ist nicht lesbar. Der Probelauf kann deshalb abbrechen, ' +
-        'und es wird nichts geschnitten.'
+      'The link state of some clips is not readable. The dry run may therefore stop, ' +
+        'and nothing is cut.'
     );
   }
   return { readable, blockers, warnings, canCut: blockers.length === 0, nativeTimeline: sequence.nativeTimelineAvailable === true };
@@ -418,11 +418,11 @@ export function assessCapabilities(sequence) {
 export function validatePlan(plan) {
   const problems = [];
   if (!plan || typeof plan !== 'object') {
-    problems.push('Kein Schnittplan vorhanden.');
+    problems.push('No cut plan available.');
     return problems;
   }
   if (compareTicks(plan.expectedDurationDeltaTicks, '0') > 0) {
-    problems.push('Der Schnittplan würde die Sequenz verlängern.');
+    problems.push('The cut plan would lengthen the sequence.');
   }
   const rippleCounts = new Map();
   for (const removal of plan.removals || []) {
@@ -436,16 +436,16 @@ export function validatePlan(plan) {
   }
   for (const [range, count] of rippleCounts) {
     if (count > 1) {
-      problems.push(`Für den Bereich ${range} würden ${count} Spuren gleichzeitig rippeln.`);
+      problems.push(`For the range ${range}, ${count} tracks would ripple at the same time.`);
     }
   }
   const razorTicks = (plan.razorPoints || []).map(point => normalizeTicks(point.ticks));
   if (new Set(razorTicks).size !== razorTicks.length) {
-    problems.push('Der Schnittplan enthält doppelte Schnittpunkte.');
+    problems.push('The cut plan contains duplicate cut points.');
   }
   for (const interval of plan.intervals || []) {
     if (compareTicks(interval.endTicks, interval.startTicks) <= 0) {
-      problems.push('Der Schnittplan enthält einen leeren Bereich.');
+      problems.push('The cut plan contains an empty range.');
       break;
     }
   }
@@ -592,12 +592,12 @@ export function expectedKeptItems({ tracks, intervals }) {
  */
 export function verifyNativePartitions(original, partitioned) {
   if (!Array.isArray(partitioned) || partitioned.length !== original.length) {
-    return ['Native Schnittstücke fehlen oder enthalten zusätzliche Spuren.'];
+    return ['Native cut pieces are missing or contain extra tracks.'];
   }
   const problems = [];
   for (const track of original) {
     const after = partitioned.find(t => t.kind === track.kind && t.index === track.index);
-    if (!after) { problems.push('Eine Spur fehlt nach dem nativen Schnitt.'); continue; }
+    if (!after) { problems.push('A track is missing after the native cut.'); continue; }
     let used = 0;
     for (const item of track.items) {
       const parts = after.items.filter(p => compareTicks(p.startTicks, item.startTicks) >= 0 &&
@@ -608,17 +608,17 @@ export function verifyNativePartitions(original, partitioned) {
         if (compareTicks(part.startTicks, cursor) !== 0 || compareTicks(part.sourceInTicks, sourceCursor) !== 0 ||
             part.mediaPath !== item.mediaPath || part.projectItemId !== item.projectItemId ||
             part.disabled !== item.disabled || compareTicks(part.endTicks, part.startTicks) <= 0) {
-          problems.push('Ein natives Schnittstück hat eine unerwartete Position oder Medienzuordnung.');
+          problems.push('A native cut piece has an unexpected position or media identity.');
         }
         cursor = part.endTicks;
         sourceCursor = part.sourceOutTicks;
         used++;
       }
       if (compareTicks(cursor, item.endTicks) !== 0 || compareTicks(sourceCursor, item.sourceOutTicks) !== 0) {
-        problems.push('Der native Schnitt bewahrt den vollständigen Quellbereich nicht.');
+        problems.push('The native cut does not keep the full source range.');
       }
     }
-    if (used !== after.items.length) problems.push('Zusätzliche native Schnittstücke sind entstanden.');
+    if (used !== after.items.length) problems.push('Extra native cut pieces appeared.');
   }
   return problems;
 }
@@ -630,7 +630,7 @@ export function expectedAfterNativeCuts({ tracks, intervals }) {
   return tracks.map(track => ({kind: track.kind, index: track.index, items: track.items.flatMap(item => {
     const start = toBigIntTicks(item.startTicks), end = toBigIntTicks(item.endTicks);
     if (cuts.some(cut => start >= cut.start && end <= cut.end)) return [];
-    if (cuts.some(cut => start < cut.end && end > cut.start)) throw Error('Natives Schnittstück überlappt eine Schnittgrenze.');
+    if (cuts.some(cut => start < cut.end && end > cut.start)) throw Error('A native cut piece overlaps a cut boundary.');
     return [{...readHostItem(item), startTicks: (start - shiftAt(start)).toString(), endTicks: (end - shiftAt(start)).toString()}];
   })}));
 }
@@ -638,7 +638,7 @@ export function expectedAfterNativeCuts({ tracks, intervals }) {
 export function verifyReadback({ expected, actual }) {
   const problems = [];
   if (!Array.isArray(expected) || !Array.isArray(actual)) {
-    return ['Nachprüfung ohne erwartete oder tatsächliche Daten.'];
+    return ['Readback without expected or actual data.'];
   }
   for (const actualTrack of actual) {
     const known = expected.some(
@@ -646,7 +646,7 @@ export function verifyReadback({ expected, actual }) {
     );
     if (!known) {
       problems.push(
-        `Spur ${trackLabel(actualTrack.kind, actualTrack.index)} war nicht erwartet.`
+        `Track ${trackLabel(actualTrack.kind, actualTrack.index)} was not expected.`
       );
     }
   }
@@ -654,42 +654,42 @@ export function verifyReadback({ expected, actual }) {
     const label = trackLabel(expectedTrack.kind, expectedTrack.index);
     const actualTrack = actual.find(track => track.kind === expectedTrack.kind && track.index === expectedTrack.index);
     if (!actualTrack) {
-      problems.push(`Spur ${label} fehlt nach dem Schnitt.`);
+      problems.push(`Track ${label} is missing after the cut.`);
       continue;
     }
     if (actualTrack.items.length !== expectedTrack.items.length) {
       problems.push(
-        `Spur ${label}: ${actualTrack.items.length} Elemente erwartet ${expectedTrack.items.length}.`
+        `Track ${label}: ${actualTrack.items.length} items, expected ${expectedTrack.items.length}.`
       );
       continue;
     }
     for (let index = 0; index < expectedTrack.items.length; index++) {
       const expectedItem = expectedTrack.items[index];
       const actualItem = readHostItem(actualTrack.items[index]);
-      const where = `Spur ${label}, Element ${index + 1}`;
+      const where = `Track ${label}, item ${index + 1}`;
       if (compareTicks(expectedItem.startTicks, actualItem.startTicks) !== 0) {
-        problems.push(`${where}: Startposition weicht ab.`);
+        problems.push(`${where}: start position differs.`);
       }
       if (compareTicks(expectedItem.endTicks, actualItem.endTicks) !== 0) {
-        problems.push(`${where}: Endposition weicht ab.`);
+        problems.push(`${where}: end position differs.`);
       }
       if (compareTicks(expectedItem.sourceInTicks, actualItem.sourceInTicks) !== 0) {
-        problems.push(`${where}: Quellstart weicht ab.`);
+        problems.push(`${where}: source start differs.`);
       }
       if (compareTicks(expectedItem.sourceOutTicks, actualItem.sourceOutTicks) !== 0) {
-        problems.push(`${where}: Quellende weicht ab.`);
+        problems.push(`${where}: source end differs.`);
       }
       if ((expectedItem.mediaPath ?? null) !== actualItem.mediaPath) {
-        problems.push(`${where}: anderes Medium.`);
+        problems.push(`${where}: different media.`);
       }
       if ((expectedItem.projectItemId ?? null) !== actualItem.projectItemId) {
-        problems.push(`${where}: anderes Projektelement.`);
+        problems.push(`${where}: different project item.`);
       }
       if (expectedItem.disabled !== actualItem.disabled) {
-        problems.push(`${where}: Deaktiviert-Status weicht ab.`);
+        problems.push(`${where}: disabled state differs.`);
       }
       if ((expectedItem.speed ?? null) !== actualItem.speed) {
-        problems.push(`${where}: Geschwindigkeit weicht ab.`);
+        problems.push(`${where}: speed differs.`);
       }
     }
   }
@@ -700,7 +700,7 @@ export function verifyReadback({ expected, actual }) {
 export function verifyOriginalUnchanged(before, after) {
   const problems = [];
   if (JSON.stringify(before) !== JSON.stringify(after)) {
-    problems.push('Die Originalsequenz hat sich verändert.');
+    problems.push('The original sequence has changed.');
   }
   return problems;
 }
@@ -741,7 +741,7 @@ export function fingerprintTracks(tracks) {
 export function preflightPlan({ tracks, intervals }) {
   const problems = [];
   if (!Array.isArray(tracks) || !Array.isArray(intervals)) {
-    return ['Vorprüfung ohne Spuren oder Bereiche.'];
+    return ['Preflight without tracks or ranges.'];
   }
   for (const interval of intervals) {
     const start = toBigIntTicks(interval.startTicks);
@@ -761,13 +761,13 @@ export function preflightPlan({ tracks, intervals }) {
       }
       if (hit.length > 1) {
         problems.push(
-          `Bereich ${start} bis ${end} liegt auf ${label} über mehrere Clipstücke, das ist nicht belegt.`
+          `Range ${start} to ${end} on ${label} spans several clip pieces, which is not proven.`
         );
         continue;
       }
       if (hit[0].itemStart > start || hit[0].itemEnd < end) {
         problems.push(
-          `Bereich ${start} bis ${end} reicht auf ${label} über eine Lücke oder einen Cliprand hinaus.`
+          `Range ${start} to ${end} on ${label} reaches across a gap or a clip edge.`
         );
       }
     }
@@ -791,21 +791,21 @@ export function findExactItemIndex(track, interval) {
  */
 export function interpretHostReply(text) {
   if (text === 'EvalScript error.' || text === undefined || text === null || text === '') {
-    return { ok: false, error: 'Der Host hat den Aufruf ohne Ergebnis beendet.' };
+    return { ok: false, error: 'The host finished the call without a result.' };
   }
   let parsed;
   try {
     parsed = JSON.parse(text);
   } catch (error) {
-    return { ok: false, error: `Antwort des Hosts nicht lesbar: ${error.message}` };
+    return { ok: false, error: `The host reply is not readable: ${error.message}` };
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { ok: false, error: 'Der Host hat kein gültiges Objekt zurückgegeben.' };
+    return { ok: false, error: 'The host did not return a valid object.' };
   }
   if (parsed.ok !== true) {
     return {
       ok: false,
-      error: parsed.error || 'Der Host hat keinen Erfolg gemeldet.',
+      error: parsed.error || 'The host did not report success.',
       parsed
     };
   }
@@ -840,7 +840,7 @@ export function hostScriptFor(name, payload) {
   if (name === 'readItemsOfSequence') {
     return `OS_readItemsOfSequence(${JSON.stringify(payload.sequenceId)})`;
   }
-  throw new Error(`Unbekannter Hostaufruf ${name}.`);
+  throw new Error(`Unknown host call ${name}.`);
 }
 
 /**
@@ -868,10 +868,10 @@ export async function applyWorkflow({ callHost, plan, analyzed, capabilities }) 
   };
 
   if (!plan) {
-    return fail('Kein Schnittplan vorhanden.');
+    return fail('No cut plan available.');
   }
   if (!capabilities || capabilities.canCut !== true) {
-    return fail('Schnitt gesperrt: erforderliche Hostwerte sind nicht lesbar.');
+    return fail('Cutting blocked: required host values are not readable.');
   }
   const planProblems = validatePlan(plan);
   if (planProblems.length > 0) {
@@ -886,7 +886,7 @@ export async function applyWorkflow({ callHost, plan, analyzed, capabilities }) 
     typeof analyzed.stateFingerprint !== 'string' ||
     analyzed.stateFingerprint.length === 0
   ) {
-    return fail('Der analysierte Sequenzzustand fehlt.');
+    return fail('The analysed sequence state is missing.');
   }
 
   // 1. The sequence state the plan was built from must still be current.
@@ -895,7 +895,7 @@ export async function applyWorkflow({ callHost, plan, analyzed, capabilities }) 
     return fail(stateNow.error);
   }
   if (stateNow.raw !== analyzed.stateFingerprint) {
-    return fail('Die Sequenz hat sich seit der Analyse geändert. Bitte neu analysieren.');
+    return fail('The sequence has changed since the analysis. Please analyse again.');
   }
 
   // 2. Original readback must match the analysed one.
@@ -904,10 +904,10 @@ export async function applyWorkflow({ callHost, plan, analyzed, capabilities }) 
     return fail(originalBefore.error);
   }
   if (originalBefore.parsed.identity !== analyzed.identity) {
-    return fail('Die aktive Sequenz ist nicht die analysierte Sequenz. Es wird nichts geschnitten.');
+    return fail('The active sequence is not the analysed sequence. Nothing is cut.');
   }
   if (originalBefore.raw !== analyzed.itemFingerprint) {
-    return fail('Die Originalsequenz hat sich seit der Analyse geändert. Es wird nichts geschnitten.');
+    return fail('The original sequence has changed since the analysis. Nothing is cut.');
   }
 
   // 3. Clone, verified inside the host call.
@@ -925,18 +925,18 @@ export async function applyWorkflow({ callHost, plan, analyzed, capabilities }) 
     return fail(cloneBefore.error);
   }
   if (cloneBefore.parsed.identity !== clone.parsed.cloneIdentity) {
-    return fail('Die Kopie ist nicht die aktive Sequenz. Es wird nichts geschnitten.');
+    return fail('The copy is not the active sequence. Nothing is cut.');
   }
   // The clone has its own identity, so the envelopes can never be equal. The
   // content must match exactly, the identity must not.
   if (JSON.stringify(cloneBefore.parsed.tracks) !== JSON.stringify(originalBefore.parsed.tracks)) {
-    return fail('Die Kopie weicht von der Originalsequenz ab. Es wird nichts geschnitten.');
+    return fail('The copy differs from the original sequence. Nothing is cut.');
   }
   if (cloneBefore.parsed.identity === originalBefore.parsed.identity) {
-    return fail('Die Kopie hat dieselbe Kennung wie das Original. Es wird nichts geschnitten.');
+    return fail('The copy has the same identity as the original. Nothing is cut.');
   }
   if (clone.parsed.originalItems !== originalBefore.raw) {
-    return fail('Der Klonauftrag hat einen anderen Originalstand gesehen. Es wird nichts geschnitten.');
+    return fail('The clone request saw a different original state. Nothing is cut.');
   }
 
   // 5. Preflight and the independent expectation, derived before any mutation.
@@ -969,7 +969,7 @@ export async function applyWorkflow({ callHost, plan, analyzed, capabilities }) 
   // 7. Verify every surviving segment on the copy.
   const cloneAfter = await step('readItems');
   if (!cloneAfter.ok) {
-    return fail(`Nachprüfung der Kopie nicht möglich: ${cloneAfter.error}`);
+    return fail(`Readback of the copy is not possible: ${cloneAfter.error}`);
   }
   const readbackProblems = verifyReadback({ expected, actual: cloneAfter.parsed.tracks });
   if (readbackProblems.length > 0) {
@@ -979,10 +979,10 @@ export async function applyWorkflow({ callHost, plan, analyzed, capabilities }) 
   // 8. Prove the original is untouched, by raw text.
   const originalAfter = await step('readItemsOfSequence', { sequenceId: analyzed.identity.split(':')[1] });
   if (!originalAfter.ok) {
-    return fail(`Prüfung der Originalsequenz nicht möglich: ${originalAfter.error}`);
+    return fail(`Check of the original sequence is not possible: ${originalAfter.error}`);
   }
   if (originalAfter.raw !== originalBefore.raw) {
-    return fail('Die Originalsequenz hat sich verändert.');
+    return fail('The original sequence has changed.');
   }
 
   result.ok = true;
@@ -990,8 +990,8 @@ export async function applyWorkflow({ callHost, plan, analyzed, capabilities }) 
   return result;
 }
 
-/** German message for one engine rejection. */
+/** Message for one engine rejection. */
 export function describeRejection(rejection) {
-  const reason = rejection.reason || 'unbekannter Grund';
-  return `Clip ${rejection.clipId} auf ${rejection.track}: ${reason}`;
+  const reason = rejection.reason || 'unknown reason';
+  return `Clip ${rejection.clipId} on ${rejection.track}: ${reason}`;
 }

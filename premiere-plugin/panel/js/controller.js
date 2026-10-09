@@ -39,8 +39,8 @@ export function createController({ host, engine, ui, input }) {
   const invalidate = reason => {
     if (state.plan) {
       state.plan = null;
-      ui.setSummary('Schnittplan verworfen.');
-      ui.log(`Schnittplan verworfen: ${reason}`, 'muted');
+      ui.setSummary('Cut plan discarded.');
+      ui.log(`Cut plan discarded: ${reason}`, 'muted');
     }
     state.analyzed = null;
     state.generation += 1;
@@ -51,10 +51,10 @@ export function createController({ host, engine, ui, input }) {
     if (state.running) {
       return;
     }
-    invalidate('Sequenz wird neu gelesen');
+    invalidate('Reading the sequence again');
     state.sequence = null;
     state.capabilities = null;
-    setBusy('Lese Sequenz ...', true);
+    setBusy('Reading sequence ...', true);
     try {
       const result = await host.readSequence();
       if (!result.ok) {
@@ -65,7 +65,7 @@ export function createController({ host, engine, ui, input }) {
       state.capabilities = assessCapabilities(result.parsed);
       ui.renderSequence(result.parsed);
       ui.renderCapabilities(state.capabilities);
-      ui.log(`Sequenz gelesen: ${result.parsed.tracks.length} Spuren, ${result.parsed.clipCount} Clips.`);
+      ui.log(`Sequence read: ${result.parsed.tracks.length} tracks, ${result.parsed.clipCount} clips.`);
     } finally {
       setBusy('', false);
     }
@@ -74,19 +74,19 @@ export function createController({ host, engine, ui, input }) {
   async function analyze() {
     if (state.running || !state.sequence) {
       if (!state.sequence) {
-        ui.log('Bitte zuerst die Sequenz lesen.', 'warn');
+        ui.log('Please read the sequence first.', 'warn');
       }
       return;
     }
     // Busy before the first await: one flight at a time.
-    setBusy('Analysiere ...', true);
+    setBusy('Analysing ...', true);
     const generation = ++state.generation;
     state.plan = null;
     state.analyzed = null;
     try {
       const selection = input.analysisTracks();
       if (selection.length === 0) {
-        ui.log('Bitte mindestens eine Audiospur für die Analyse wählen.', 'warn');
+        ui.log('Please choose at least one audio track for the analysis.', 'warn');
         return;
       }
 
@@ -98,7 +98,7 @@ export function createController({ host, engine, ui, input }) {
         return;
       }
       if (state.sequence && sequenceNow.parsed.identity !== state.sequence.identity) {
-        ui.log('Die aktive Sequenz ist nicht mehr die gelesene Sequenz, bitte neu lesen.', 'warn');
+        ui.log('The active sequence is no longer the one that was read, please read it again.', 'warn');
         return;
       }
       const stateFingerprint = sequenceNow.raw;
@@ -112,14 +112,14 @@ export function createController({ host, engine, ui, input }) {
         return;
       }
       if (originalNow.parsed.identity !== sequenceNow.parsed.identity) {
-        ui.log('Der Positionsstand passt nicht zur gelesenen Sequenz, bitte neu lesen.', 'warn');
+        ui.log('The positions do not match the sequence that was read, please read it again.', 'warn');
         return;
       }
       const itemFingerprint = originalNow.raw;
 
       let renderedMixdown = null;
       if (state.capabilities.nativeTimeline) {
-        setBusy('Premiere rendert die gewählten Audiospuren. Dieser Schritt ist nicht abbrechbar.', true);
+        setBusy('Premiere renders the chosen audio tracks. This step cannot be cancelled.', true);
         const rendered = await host.call('renderAudio', {
           expectedIdentity: sequenceNow.parsed.identity,
           expectedItemFingerprint: itemFingerprint,
@@ -130,8 +130,8 @@ export function createController({ host, engine, ui, input }) {
         if (!rendered.ok) { ui.log(rendered.error, 'error'); return; }
         if (generation !== state.generation) return;
         renderedMixdown = {mediaPath: rendered.parsed.mediaPath, analysisTracks: selection};
-        ui.log(`Timeline-Audio exportiert: ${(rendered.parsed.renderMilliseconds / 1000).toFixed(2)} s.`, 'ok');
-        setBusy('Stille wird analysiert ...', true);
+        ui.log(`Timeline audio exported: ${(rendered.parsed.renderMilliseconds / 1000).toFixed(2)} s.`, 'ok');
+        setBusy('Analysing silence ...', true);
       }
 
       let snapshot;
@@ -144,13 +144,13 @@ export function createController({ host, engine, ui, input }) {
           }), renderedMixdown}
         );
       } catch (error) {
-        ui.log(`Schnappschuss nicht möglich: ${error.message}`, 'error');
+        ui.log(`Snapshot not possible: ${error.message}`, 'error');
         return;
       }
 
       const result = await engine.run(snapshot);
       if (generation !== state.generation) {
-        ui.log('Ein neuer Lauf hat diesen ersetzt, Ergebnis verworfen.', 'warn');
+        ui.log('A newer run replaced this one, result discarded.', 'warn');
         return;
       }
       if (!result.ok) {
@@ -175,8 +175,8 @@ export function createController({ host, engine, ui, input }) {
       };
       const summary = summarizePlan(plan);
       ui.setSummary(
-        `${summary.cutCount} Schnitte, ${summary.removedSeconds.toFixed(2)} s entfernt, ` +
-          `${summary.rejectionCount} abgelehnt, ${summary.warningCount} Hinweise`
+        `${summary.cutCount} cuts, ${summary.removedSeconds.toFixed(2)} s removed, ` +
+          `${summary.rejectionCount} rejected, ${summary.warningCount} warnings`
       );
       for (const rejection of plan.rejections || []) {
         ui.log(describeRejection(rejection), 'warn');
@@ -185,20 +185,20 @@ export function createController({ host, engine, ui, input }) {
         ui.log(warning, 'warn');
       }
       if (result.runDirectory) {
-        ui.log(`Belege dieses Laufs: ${result.runDirectory}`, 'muted');
+        ui.log(`Evidence of this run: ${result.runDirectory}`, 'muted');
       }
       if (summary.cutCount > 0) {
-        ui.log(`Schnittplan bereit: ${summary.cutCount} Bereiche, ${summary.removedSeconds.toFixed(2)} s.`, 'ok');
+        ui.log(`Cut plan ready: ${summary.cutCount} ranges, ${summary.removedSeconds.toFixed(2)} s.`, 'ok');
       } else if (summary.rejectionCount > 0) {
         ui.log(
-          'Kein freigegebener Schnitt, siehe Ablehnungen. Unbekannte Hostwerte sind Grenzen, nicht Stille.',
+          'No approved cut, see the rejections. Unknown host values are limits, not silence.',
           'warn'
         );
       } else {
-        ui.log('Keine Stillen gefunden.', 'ok');
+        ui.log('No silences found.', 'ok');
       }
     } catch (error) {
-      ui.log(`Analyse fehlgeschlagen: ${error.message}`, 'error');
+      ui.log(`Analysis failed: ${error.message}`, 'error');
     } finally {
       setBusy('', false);
     }
@@ -207,18 +207,18 @@ export function createController({ host, engine, ui, input }) {
   async function apply() {
     if (state.running || !state.plan || !state.analyzed) {
       if (!state.plan || !state.analyzed) {
-        ui.log('Bitte zuerst analysieren.', 'warn');
+        ui.log('Please analyse first.', 'warn');
       }
       return;
     }
-    setBusy('Prüfe und schneide ...', true);
+    setBusy('Checking and cutting ...', true);
     try {
       const generation = state.generation;
       if (state.capabilities.nativeTimeline) {
         // Some master mixer state has no public reader. Re-render immediately
         // before cutting and require exactly the same cut operations.
         const analyzed = state.analyzed;
-        setBusy('Premiere prüft den aktuellen Audiomix erneut ...', true);
+        setBusy('Premiere checks the current audio mix again ...', true);
         const rendered = await host.call('renderAudio', {
           expectedIdentity: analyzed.identity,
           expectedItemFingerprint: analyzed.itemFingerprint,
@@ -226,15 +226,15 @@ export function createController({ host, engine, ui, input }) {
           analysisTracks: analyzed.snapshot.analysisTracks,
           outputPath: engine.renderPath()
         });
-        if (!rendered.ok) { ui.log(rendered.error, 'error'); invalidate('Audioexport fehlgeschlagen'); return; }
+        if (!rendered.ok) { ui.log(rendered.error, 'error'); invalidate('Audio export failed'); return; }
         const checked = await engine.run({...analyzed.snapshot,
           renderedMixdown: {mediaPath: rendered.parsed.mediaPath, analysisTracks: analyzed.snapshot.analysisTracks}});
-        if (generation !== state.generation) { ui.log('Einstellungen während der Prüfung geändert. Bitte neu analysieren.', 'warn'); return; }
+        if (generation !== state.generation) { ui.log('Settings changed during the check. Please analyse again.', 'warn'); return; }
         const operations = plan => JSON.stringify({intervals: plan.intervals, removals: plan.removals,
           razorPoints: plan.razorPoints, expectedDurationDeltaTicks: plan.expectedDurationDeltaTicks});
         if (!checked.ok || !checked.envelope?.plan || operations(checked.envelope.plan) !== operations(state.plan)) {
-          ui.log('Der Audiomix oder seine Stillen haben sich geändert. Bitte neu analysieren.', 'warn');
-          invalidate('Aktueller Audiomix weicht ab'); return;
+          ui.log('The audio mix or its silences have changed. Please analyse again.', 'warn');
+          invalidate('Current audio mix differs'); return;
         }
       }
       const result = await applyWorkflow({
@@ -245,16 +245,16 @@ export function createController({ host, engine, ui, input }) {
       });
       if (result.ok) {
         ui.log(result.applied.message, 'ok');
-        ui.log('Nachprüfung: Kopie und Original stimmen mit der Erwartung überein.', 'ok');
+        ui.log('Readback: copy and original match the expectation.', 'ok');
       } else {
         ui.log(result.error, 'error');
-        ui.log('Es wird nichts weiter verändert. Die Originalsequenz bleibt unberührt.', 'muted');
+        ui.log('Nothing else is changed. The original sequence stays untouched.', 'muted');
       }
       // A used plan must not stay actionable for the same state.
-      invalidate(result.ok ? 'Schnitt abgeschlossen' : 'Schnitt abgebrochen');
+      invalidate(result.ok ? 'Cut finished' : 'Cut stopped');
     } catch (error) {
-      ui.log(`Schnitt abgebrochen: ${error.message}`, 'error');
-      invalidate('Unerwarteter Fehler');
+      ui.log(`Cut stopped: ${error.message}`, 'error');
+      invalidate('Unexpected error');
     } finally {
       setBusy('', false);
     }

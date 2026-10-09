@@ -181,7 +181,7 @@ test('the panel blocks an unobserved frame rate before any cut', async () => {
     audioStateReadable: true
   });
   assert.equal(blocked.canCut, false);
-  assert.ok(blocked.blockers.some(message => message.includes('25 Bilder pro Sekunde')));
+  assert.ok(blocked.blockers.some(message => message.includes('25 frames per second')));
 
   const allowed = assessCapabilities({
     ok: true,
