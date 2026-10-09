@@ -32,7 +32,7 @@
 ## Watch
 
 <p align="center">
-  <a href="https://github.com/nicremo/open-silences/releases/latest"><img src="assets/demo.gif" alt="The launch film: the mark becomes a voice track, the panel finds the pauses, one click and the timeline closes up" width="960" /></a>
+  <a href="https://github.com/nicremo/open-silences/releases/latest"><img src="assets/launch-film-en.gif" alt="The launch film: the mark becomes a voice track, the panel finds the pauses, one click and the timeline closes up" width="960" /></a>
 </p>
 
 <p align="center"><sub>A 16 second launch film. The full quality MP4 with sound is attached to the <a href="https://github.com/nicremo/open-silences/releases/latest">latest release</a>. Panel texts are the real ones, the numbers are an example.</sub></p>
