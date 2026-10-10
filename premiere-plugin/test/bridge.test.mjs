@@ -127,3 +127,24 @@ test('the lock admits one command at a time and frees a dead owner',()=>{
   fs.writeFileSync(path.join(dir,'cli.lock'), '999999999');
   acquireLock(dir)();
 });
+test('a bridge that dies before claiming the call withdraws it and reports the bridge as gone',async()=>{
+  const dir = tempDir(); let t = 100000; beat(dir, t);
+  const client = createBridgeClient({directory:dir, pollMs:1, now:()=>t});
+  const pending = client.call('apply', {});
+  await new Promise(r => setTimeout(r, 5));
+  t += 20000;
+  await assert.rejects(pending, BridgeUnavailable);
+  assert.deepEqual(fs.readdirSync(dir), ['heartbeat.json'], 'the unclaimed command is withdrawn');
+});
+test('a bridge that dies after claiming the call gives an unknown outcome, not a hang',async()=>{
+  const dir = tempDir(); let t = 100000; beat(dir, t);
+  const client = createBridgeClient({directory:dir, pollMs:1, now:()=>t});
+  const pending = client.call('apply', {});
+  await new Promise(r => setTimeout(r, 5));
+  const name = fs.readdirSync(dir).find(n => n.startsWith('command-'));
+  fs.renameSync(path.join(dir, name), path.join(dir, `${name}.claimed`));
+  t += 20000;
+  await new Promise(r => setTimeout(r, 5));
+  t += 60000;
+  await assert.rejects(pending, OutcomeUnknown);
+});

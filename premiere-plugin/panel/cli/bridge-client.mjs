@@ -18,6 +18,9 @@ export class OutcomeUnknown extends Error {
   }
 }
 
+// A claimed call whose bridge stays silent this long is reported as unknown.
+export const BRIDGE_LOST_MS = 60000;
+
 export const defaultBridgeDirectory = () => path.join(os.homedir(), ...BRIDGE_SUBPATH);
 
 export function readHeartbeat(directory) {
@@ -41,6 +44,19 @@ export function createBridgeClient({directory = defaultBridgeDirectory(), timeou
         const response = JSON.parse(fs.readFileSync(answer, 'utf8'));
         fs.unlinkSync(answer);
         return response.ok ? interpretHostReply(response.reply) : {ok:false, error:response.error};
+      }
+      const heartbeat = readHeartbeat(directory);
+      if (!isHeartbeatFresh(heartbeat, now())) {
+        // The bridge claims by rename, so an unlink that succeeds proves the
+        // call never started and cannot start any more.
+        try {
+          fs.unlinkSync(target);
+          throw new BridgeUnavailable('The Open Silences bridge stopped before the call started. Is Premiere still running?');
+        } catch (error) {
+          if (error instanceof BridgeUnavailable) throw error;
+        }
+        // Claimed already: give a busy Premiere time before calling it lost.
+        if (!heartbeat || now() - heartbeat.t > BRIDGE_LOST_MS) break;
       }
       await sleep(pollMs);
     }
