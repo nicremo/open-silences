@@ -83,3 +83,47 @@ test('heartbeat is written atomically with protocol, time and busy flag',()=>{
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir,'heartbeat.json'),'utf8')), {protocol:PROTOCOL_VERSION, t:4242, busy:false});
   assert.deepEqual(fs.readdirSync(dir), ['heartbeat.json']);
 });
+
+import {createBridgeClient, BridgeUnavailable, OutcomeUnknown, acquireLock} from '../panel/cli/bridge-client.mjs';
+
+const beat = (dir, t = Date.now()) => fs.writeFileSync(path.join(dir,'heartbeat.json'), JSON.stringify({protocol:PROTOCOL_VERSION, t, busy:false}));
+
+test('client and server round trip through the directory',async()=>{
+  const dir = tempDir(); beat(dir);
+  const server = createBridgeServer({fs, path, directory:dir, evalScript:async()=>'{"ok":true,"name":"Seq"}'});
+  const client = createBridgeClient({directory:dir, pollMs:5});
+  const pending = client.call('readSequence');
+  while (!(await server.tick())) await new Promise(r => setTimeout(r, 5));
+  const reply = await pending;
+  assert.equal(reply.ok, true);
+  assert.equal(reply.parsed.name, 'Seq');
+  assert.equal(reply.raw, '{"ok":true,"name":"Seq"}');
+  assert.deepEqual(fs.readdirSync(dir), ['heartbeat.json']);
+});
+test('a stale heartbeat means the bridge is not running and nothing is queued',async()=>{
+  const dir = tempDir(); beat(dir, Date.now() - 60000);
+  await assert.rejects(createBridgeClient({directory:dir}).call('readSequence'), BridgeUnavailable);
+  assert.deepEqual(fs.readdirSync(dir), ['heartbeat.json']);
+});
+test('no reply within the timeout is an unknown outcome, never a retry',async()=>{
+  const dir = tempDir(); beat(dir);
+  const client = createBridgeClient({directory:dir, timeoutMs:30, pollMs:5});
+  await assert.rejects(client.call('apply', {}), error => error instanceof OutcomeUnknown && error.call === 'apply');
+  assert.equal(fs.readdirSync(dir).filter(n => n.startsWith('command-')).length, 1, 'exactly one command was written');
+  assert.ok(client.lastUnknown() instanceof OutcomeUnknown);
+});
+test('a bridge error response becomes a failed host reply',async()=>{
+  const dir = tempDir(); beat(dir);
+  const server = createBridgeServer({fs, path, directory:dir, evalScript:async()=>{ throw Error('host gone'); }});
+  const pending = createBridgeClient({directory:dir, pollMs:5}).call('readItems');
+  while (!(await server.tick())) await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(await pending, {ok:false, error:'host gone'});
+});
+test('the lock admits one command at a time and frees a dead owner',()=>{
+  const dir = tempDir();
+  const release = acquireLock(dir);
+  assert.throws(() => acquireLock(dir), /Another open-silences command is running/);
+  release();
+  fs.writeFileSync(path.join(dir,'cli.lock'), '999999999');
+  acquireLock(dir)();
+});
