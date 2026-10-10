@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Agent CLI `open-silences` with `status`, `sequence`, `estimate`, `preview` and `cut --yes`, driven through an invisible bridge extension that starts with Premiere. See `docs/CLI.md`.
+
 ## 0.2.0-alpha.2
 
 - The panel speaks English, Spanish and German. English is the default; the language is chosen on first open and can be changed any time from the header.

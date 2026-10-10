@@ -23,3 +23,9 @@ The workflow rechecks identity and state before analysis and mutation. The adapt
 The adapter embeds JSON2 because a fresh ExtendScript context can lack JSON. Startup cannot depend on another extension supplying it.
 
 The native cut path uses the undocumented QE API, which limits supported Premiere versions and frame rates. Host mutation is not transactional. On failure, retain the named backup and report the incomplete operation; do not retry a mutation automatically.
+
+## Agent CLI
+
+The package contains a second, invisible CEP extension (`de.fabian.open-silences.bridge`). It starts when Premiere activates, loads the same ExtendScript adapter and serves a file queue in `~/Library/Application Support/open-silences/bridge/`. A command names one of the six host calls; raw ExtendScript is rejected. Commands are claimed by an atomic rename, run one at a time, and answered with the unchanged host text. Commands older than two minutes are refused.
+
+The CLI in `cli/` runs `createWorkflow` from the panel with this queue as host and the bundled engine as engine. `--yes` replaces the confirmation click. A call without a reply is reported as an unknown outcome and never retried. Usage: `docs/CLI.md`.
