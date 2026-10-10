@@ -1,6 +1,6 @@
 /**
- * Command line arguments of open-silences. Defaults match the panel's
- * Standard settings: entire timeline, A1, -46 dB, four times 160 ms.
+ * Command line arguments of open-silences. Defaults follow the panel's
+ * Standard pacing: entire timeline, A1, four times 160 ms, with -46 dB.
  */
 import {parseArgs} from 'node:util';
 import {PRESETS, TIMING_FIELDS} from '../js/workflow.js';
@@ -23,7 +23,7 @@ Commands:
   preview    Analyse and report the cuts, change nothing (no backup)
   cut        Backup, analyse, cut and verify. Requires --yes
 
-Options (defaults are the panel Standard settings):
+Options (defaults: entire timeline, A1, -46 dB, Standard pacing):
   --scope entire|inout|selected   Range (default entire)
   --tracks A1[,A2]                Analysis tracks (default A1)
   --threshold <dB>|auto           Noise floor -60..0 (default -46), auto estimates first

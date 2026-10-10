@@ -44,7 +44,7 @@ test('engine path: flag first, then environment, else an error',()=>{
 
 import {parseCliArgs, UsageError, CLI_DEFAULTS} from '../panel/cli/args.mjs';
 
-test('defaults are the panel standard settings from the screenshots',()=>{
+test('defaults are entire timeline, A1, -46 dB and the Standard pacing',()=>{
   const parsed = parseCliArgs(['preview']);
   assert.equal(parsed.command, 'preview');
   assert.deepEqual(parsed.config, {scope:'entire', analysisTracks:[{kind:'audio', index:0}],

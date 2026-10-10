@@ -30,7 +30,7 @@ All commands work on the active sequence in Premiere.
 
 ## Defaults
 
-The defaults are the panel's Standard settings: entire timeline, track A1, noise floor -46 dB, pacing Standard (pauses from 160 ms, speech from 160 ms, 160 ms before and after speech).
+The defaults follow the panel's Standard pacing: entire timeline, track A1, pauses from 160 ms, speech from 160 ms, 160 ms before and after speech. The noise floor default is -46 dB, one step below the panel's -45 dB start value. Use `--threshold auto` to measure it per recording.
 
 | Option | Default | Values |
 | --- | --- | --- |
