@@ -76,8 +76,11 @@ export function createWorkflow({host, engine, ui, t = ENGLISH}) {
     if (running) return null;
     const reply = await take('readSequence'); sequence = reply.parsed; return sequence;
   }
-  async function run(config, estimateOnly = false) {
+  async function run(config, mode = 'full') {
     if (running) return null;
+    // Legacy callers pass true for the noise estimate.
+    const estimateOnly = mode === true || mode === 'estimate';
+    const previewOnly = mode === 'preview';
     running = true; cancelled = false;
     let backup = null, cutting = false;
     ui.busy(true, t('status.check'), true, 'check');
@@ -100,7 +103,7 @@ export function createWorkflow({host, engine, ui, t = ENGLISH}) {
       const original = await take('readItems');
       if (original.parsed.identity !== sequence.identity) throw Error(t('error.sequenceChanged'));
       checkCancelled();
-      if (!estimateOnly) {
+      if (!estimateOnly && !previewOnly) {
         ui.busy(true, t('status.backup'), false, 'backup');
         backup = (await take('prepareCut', {expectedIdentity:sequence.identity, expectedStateFingerprint:fresh.raw, expectedItemFingerprint:original.raw})).parsed;
         const backupRead = await take('readItemsOfSequence', {sequenceId:backup.backupId});
@@ -135,13 +138,16 @@ export function createWorkflow({host, engine, ui, t = ENGLISH}) {
       }
       const plan = analysis.plan;
       if (plan.rejections?.length) throw Error(t('error.unsuitable'));
+      const rangeSeconds = sections.reduce((sum, range) => sum + seconds((BigInt(range.endTicks) - BigInt(range.startTicks)).toString()), 0);
+      const preview = summarizePlan(plan);
+      if (previewOnly) {
+        return {ok:true, preview:{cutCount:preview.cutCount, removedSeconds:preview.removedSeconds, rangeSeconds}, plan};
+      }
       if (!plan.intervals.length) {
         ui.complete({cutCount:0, removedSeconds:0, backupName:backup.backupName});
         return {ok:true, backup, plan};
       }
       // The user sees what will happen before anything is cut.
-      const rangeSeconds = sections.reduce((sum, range) => sum + seconds((BigInt(range.endTicks) - BigInt(range.startTicks)).toString()), 0);
-      const preview = summarizePlan(plan);
       checkCancelled();
       const approved = await ui.confirm({cutCount:preview.cutCount, removedSeconds:preview.removedSeconds, rangeSeconds});
       if (!approved) {
