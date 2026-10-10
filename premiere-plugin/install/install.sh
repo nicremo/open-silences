@@ -37,6 +37,14 @@ cp "$root/licenses/GenSDK_IHC-en_US-20120323_1224.pdf" "$package/licenses/"
 cp "$root/engine/target/release/silences-engine" "$package/engine/silences-engine"
 chmod +x "$package/engine/silences-engine"
 
+mkdir -p "$package/cli"
+for file in open-silences.mjs args.mjs bridge-client.mjs engine-runner.mjs; do
+  cp "$root/panel/cli/$file" "$package/cli/$file"
+done
+chmod +x "$package/cli/open-silences.mjs"
+# Node reads js/*.js as ES modules only with this marker. CEP ignores it.
+printf '{\n  "private": true,\n  "type": "module"\n}\n' > "$package/package.json"
+
 echo "3/3 Package ready: $package"
 cat <<'HINT'
 
@@ -44,4 +52,5 @@ This script installs nothing and changes no system setting.
 The manual installation steps are in the README.
 
 The native timeline analysis uses the Rust engine without external decoders.
+The agent CLI is cli/open-silences.mjs inside the package, see docs/CLI.md.
 HINT

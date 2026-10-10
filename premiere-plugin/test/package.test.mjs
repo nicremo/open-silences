@@ -60,7 +60,12 @@ test('the package contains every required file', () => {
     'bridge.html',
     'js/bridge.js',
     'js/bridge-main.js',
-    'js/bridge-protocol.js'
+    'js/bridge-protocol.js',
+    'package.json',
+    'cli/open-silences.mjs',
+    'cli/args.mjs',
+    'cli/bridge-client.mjs',
+    'cli/engine-runner.mjs'
   ];
   for (const relative of required) {
     const path = join(packageRoot, relative);
@@ -166,4 +171,13 @@ test('the manifest declares an invisible bridge that starts with Premiere', () =
   assert.match(bridge, /<Type>Custom<\/Type>/);
   assert.match(bridge, /<Event>com\.adobe\.csxs\.events\.ApplicationActivate<\/Event>/);
   assert.match(bridge, /<Parameter>--enable-nodejs<\/Parameter>/);
+});
+
+test('the packaged CLI runs from the package layout', () => {
+  ensureBuilt();
+  assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).type, 'module');
+  const cli = join(packageRoot, 'cli', 'open-silences.mjs');
+  assert.ok((statSync(cli).mode & 0o111) !== 0, 'the CLI must be executable');
+  const help = execFileSync(cli, ['--help'], {encoding:'utf8'});
+  assert.match(help, /Usage: open-silences/);
 });

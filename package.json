@@ -4,6 +4,9 @@
   "private": true,
   "description": "Free, open source silence removal for Adobe Premiere Pro. Local Rust engine, verified sequence backup, preview before every cut.",
   "type": "module",
+  "bin": {
+    "open-silences": "premiere-plugin/panel/cli/open-silences.mjs"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
