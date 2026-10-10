@@ -101,3 +101,25 @@ test('workflow messages follow the injected language and default to English',asy
  const busy=german.notices.find(n=>Array.isArray(n)&&n[0]&&n[3]==='backup');
  assert.equal(busy[1],'Backup wird erstellt ...');
 });
+test('preview creates no backup, asks nothing and never cuts',async()=>{
+ const h=harness({plan:cutPlan});await h.workflow.refresh();const result=await h.workflow.run(config,'preview');
+ assert.equal(result.ok,true,result.error);
+ assert.deepEqual(result.preview,{cutCount:1,removedSeconds:1,rangeSeconds:10});
+ assert.equal(h.calls.includes('prepareCut'),false);
+ assert.equal(h.calls.includes('apply'),false);
+ assert.equal(h.previews.length,0);
+ assert.deepEqual(h.phases,['check','audio','detect']);
+});
+test('preview without silences reports zero cuts and no backup',async()=>{
+ const h=harness();await h.workflow.refresh();const result=await h.workflow.run(config,'preview');
+ assert.equal(result.ok,true,result.error);
+ assert.equal(result.preview.cutCount,0);
+ assert.equal(h.calls.includes('prepareCut'),false);
+});
+test('estimate mode accepts the string name and the legacy boolean',async()=>{
+ for (const mode of ['estimate',true]) {
+  const h=harness();await h.workflow.refresh();const result=await h.workflow.run(config,mode);
+  assert.equal(result.ok,true,result.error);assert.equal(result.noiseEstimate,-45);
+  assert.equal(h.calls.includes('prepareCut'),false);
+ }
+});

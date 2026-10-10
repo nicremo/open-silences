@@ -15,6 +15,7 @@
 >
   <ExtensionList>
     <Extension Id="de.fabian.open-silences.main" Version="0.2.0" />
+    <Extension Id="de.fabian.open-silences.bridge" Version="0.2.0" />
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
@@ -49,6 +50,35 @@
             <Size>
               <Width>420</Width>
               <Height>760</Height>
+            </Size>
+          </Geometry>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+    <!-- Invisible bridge for the agent CLI. Starts with Premiere, no window. -->
+    <Extension Id="de.fabian.open-silences.bridge">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./bridge.html</MainPath>
+          <ScriptPath>./jsx/silences.jsx</ScriptPath>
+          <CEFCommandLine>
+            <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--mixed-context</Parameter>
+          </CEFCommandLine>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>false</AutoVisible>
+          <StartOn>
+            <Event>com.adobe.csxs.events.ApplicationActivate</Event>
+            <Event>applicationActivate</Event>
+          </StartOn>
+        </Lifecycle>
+        <UI>
+          <Type>Custom</Type>
+          <Geometry>
+            <Size>
+              <Width>1</Width>
+              <Height>1</Height>
             </Size>
           </Geometry>
         </UI>

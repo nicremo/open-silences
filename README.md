@@ -76,6 +76,17 @@ Open Silences is an alpha for **Premiere Pro 26.5 on Apple Silicon Macs**. The e
 
 To update, close the panel, replace the folder and open the panel again.
 
+### Agent CLI
+
+Open Silences can also be driven from a terminal or by an AI agent. An invisible bridge starts with Premiere, and the `open-silences` command runs the same protected workflow as the panel:
+
+```bash
+open-silences preview --json
+open-silences cut --yes --json
+```
+
+Defaults: entire timeline, track A1, -46 dB and the Standard pacing. Setup and all options: [docs/CLI.md](docs/CLI.md).
+
 ### Build from source
 
 Install the Rust toolchain and Node.js 22 or later.
