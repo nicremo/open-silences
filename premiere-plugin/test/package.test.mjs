@@ -56,7 +56,11 @@ test('the package contains every required file', () => {
     'jsx/silences.jsx',
     'jsx/JSON2.NOTICE.md',
     'licenses/GenSDK_IHC-en_US-20120323_1224.pdf',
-    'engine/silences-engine'
+    'engine/silences-engine',
+    'bridge.html',
+    'js/bridge.js',
+    'js/bridge-main.js',
+    'js/bridge-protocol.js'
   ];
   for (const relative of required) {
     const path = join(packageRoot, relative);
@@ -109,7 +113,8 @@ test('the package carries only runtime files', () => {
 
 test('the packaged modules parse and the engine reports its version', () => {
   ensureBuilt();
-  for (const relative of ['js/main.js', 'js/core.js', 'js/controller.js', 'js/workflow.js', 'js/i18n.js']) {
+  for (const relative of ['js/main.js', 'js/core.js', 'js/controller.js', 'js/workflow.js', 'js/i18n.js',
+    'js/bridge.js', 'js/bridge-main.js', 'js/bridge-protocol.js']) {
     const path = join(packageRoot, relative);
     execFileSync(process.execPath, ['--check', path], { stdio: 'pipe' });
   }
@@ -149,4 +154,16 @@ test('the embedded ES3 JSON implementation matches its source notice', () => {
   const notice = readFileSync(join(packageRoot, 'jsx/JSON2.NOTICE.md'), 'utf8');
   assert.ok(notice.includes(createHash('sha256').update(bundled).digest('hex')));
   assert.match(bundled, /Public Domain/);
+});
+
+test('the manifest declares an invisible bridge that starts with Premiere', () => {
+  ensureBuilt();
+  const manifest = readFileSync(join(packageRoot, 'CSXS', 'manifest.xml'), 'utf8');
+  assert.match(manifest, /<Extension Id="de\.fabian\.open-silences\.bridge" Version="[0-9.]+" \/>/);
+  const bridge = manifest.slice(manifest.indexOf('<Extension Id="de.fabian.open-silences.bridge">'));
+  assert.match(bridge, /<MainPath>\.\/bridge\.html<\/MainPath>/);
+  assert.match(bridge, /<ScriptPath>\.\/jsx\/silences\.jsx<\/ScriptPath>/);
+  assert.match(bridge, /<Type>Custom<\/Type>/);
+  assert.match(bridge, /<Event>com\.adobe\.csxs\.events\.ApplicationActivate<\/Event>/);
+  assert.match(bridge, /<Parameter>--enable-nodejs<\/Parameter>/);
 });
