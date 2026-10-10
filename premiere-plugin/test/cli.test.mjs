@@ -41,3 +41,38 @@ test('engine path: flag first, then environment, else an error',()=>{
   assert.equal(resolveEnginePath({env:{OPEN_SILENCES_ENGINE:engine}}), engine);
   assert.throws(() => resolveEnginePath({flag:'/missing/engine', env:{}}), /not found/);
 });
+
+import {parseCliArgs, UsageError, CLI_DEFAULTS} from '../panel/cli/args.mjs';
+
+test('defaults are the panel standard settings from the screenshots',()=>{
+  const parsed = parseCliArgs(['preview']);
+  assert.equal(parsed.command, 'preview');
+  assert.deepEqual(parsed.config, {scope:'entire', analysisTracks:[{kind:'audio', index:0}],
+    settings:{threshold:-46, minPause:160, minSpeech:160, leadIn:160, tail:160}});
+  assert.equal(parsed.autoThreshold, false);
+  assert.equal(parsed.yes, false);
+  assert.equal(CLI_DEFAULTS.threshold, -46);
+});
+test('presets, single timing overrides, tracks, scope and auto threshold',()=>{
+  const parsed = parseCliArgs(['cut','--yes','--preset','calm','--tail','90','--tracks','A1,a3','--scope','inout','--threshold','auto','--json']);
+  assert.deepEqual(parsed.config.settings, {threshold:-46, minPause:600, minSpeech:160, leadIn:220, tail:90});
+  assert.deepEqual(parsed.config.analysisTracks, [{kind:'audio', index:0}, {kind:'audio', index:2}]);
+  assert.equal(parsed.config.scope, 'inout');
+  assert.equal(parsed.autoThreshold, true);
+  assert.equal(parsed.json, true);
+  assert.equal(parsed.yes, true);
+});
+test('explicit threshold and timeout',()=>{
+  const parsed = parseCliArgs(['preview','--threshold','-50','--timeout','90']);
+  assert.equal(parsed.config.settings.threshold, -50);
+  assert.equal(parsed.timeoutMs, 90000);
+});
+test('invalid input is a usage error',()=>{
+  for (const argv of [[], ['dance'], ['preview','--scope','all'], ['preview','--tracks','V1'], ['preview','--preset','fast'],
+    ['preview','--threshold','-61'], ['preview','--threshold','loud'], ['preview','--tail','-1'], ['preview','--unknown']]) {
+    assert.throws(() => parseCliArgs(argv), UsageError, argv.join(' '));
+  }
+});
+test('cut without --yes is refused',()=>{
+  assert.throws(() => parseCliArgs(['cut']), /--yes/);
+});
