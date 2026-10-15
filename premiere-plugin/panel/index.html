@@ -72,6 +72,7 @@
     .number input:focus-visible { outline:none; }
     .number span { padding-right:10px; font-size:12px; color:var(--muted); }
     .threshold-field { width:116px; }
+    .cut-scope { margin-top:24px; }
     .threshold-field input { font-size:18px; font-weight:600; }
     footer { padding:14px 20px 18px; border-top:1px solid #353c40; background:var(--bg); }
     .safety { text-align:center; font-size:12px; color:var(--muted); margin:0 0 10px; }
@@ -153,7 +154,12 @@
             <div class="timing"><div><label for="minSpeech" data-i18n="timing.minSpeech">Speech from</label><p class="help" data-i18n="timing.minSpeechHelp">Shorter quiet sounds do not count as speech. Short loud words stay.</p></div><div class="number"><input id="minSpeech" type="number" min="0" max="10000" step="10" value="160" required/><span>ms</span></div></div>
             <div class="timing"><div><label for="leadIn" data-i18n="timing.leadIn">Air before speech</label><p class="help" data-i18n="timing.leadInHelp">Protects the start of your words.</p></div><div class="number"><input id="leadIn" type="number" min="0" max="10000" step="10" value="160" required/><span>ms</span></div></div>
             <div class="timing"><div><label for="tail" data-i18n="timing.tail">Air after speech</label><p class="help" data-i18n="timing.tailHelp">Lets words fade out naturally.</p></div><div class="number"><input id="tail" type="number" min="0" max="10000" step="10" value="160" required/><span>ms</span></div></div>
+            <div class="timing"><div><label for="minCutSpacing" data-i18n="timing.minCutSpacing">Space between cuts</label><p class="help" data-i18n="timing.minCutSpacingHelp">Where cuts lie closer together, the longest of them stays. 0 switches this off.</p></div><div class="number"><input id="minCutSpacing" type="number" min="0" max="10000" step="10" value="0" required/><span>ms</span></div></div>
           </div>
+          <fieldset id="cutScope" class="cut-scope"><legend data-i18n="cutScope.legend">What gets cut</legend>
+            <label class="scope"><input type="radio" name="cutScope" value="selection" checked/><span><strong data-i18n="cutScope.selection">Whole selection</strong><small data-i18n="cutScope.selectionHelp">Every track is cut at each pause, gaps between clips included.</small></span></label>
+            <label class="scope"><input type="radio" name="cutScope" value="dialogue"/><span><strong data-i18n="cutScope.dialogue">Under speech clips only</strong><small data-i18n="cutScope.dialogueHelp">Only where a clip lies on a chosen speech track.</small></span></label>
+          </fieldset>
         </form>
         <div id="backupNotice" hidden></div>
       </section>

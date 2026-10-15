@@ -5,12 +5,13 @@
 import {parseArgs} from 'node:util';
 import {PRESETS, TIMING_FIELDS} from '../js/workflow.js';
 
-export const CLI_DEFAULTS = Object.freeze({scope:'entire', tracks:['A1'], threshold:-46, preset:'standard'});
+export const CLI_DEFAULTS = Object.freeze({scope:'entire', tracks:['A1'], threshold:-46, preset:'standard', cutScope:'selection'});
 export const PRESET_NAMES = Object.freeze({standard:'mine', calm:'calm', relaxed:'measured', fluid:'paced', energetic:'energetic', tight:'jumpy'});
 const COMMANDS = ['status', 'sequence', 'estimate', 'preview', 'cut'];
 const SCOPES = ['entire', 'inout', 'selected'];
+const CUT_SCOPES = ['selection', 'dialogue'];
 const TIMING_OPTIONS = {minPause:'min-pause', minSpeech:'min-speech', leadIn:'lead-in', tail:'tail'};
-const VALUE_OPTIONS = ['scope', 'tracks', 'threshold', 'preset', 'min-pause', 'min-speech', 'lead-in', 'tail', 'timeout', 'engine'];
+const VALUE_OPTIONS = ['scope', 'tracks', 'threshold', 'preset', 'min-pause', 'min-speech', 'lead-in', 'tail', 'min-cut-spacing', 'cut-scope', 'timeout', 'engine'];
 
 export class UsageError extends Error {}
 
@@ -29,6 +30,8 @@ Options (defaults: entire timeline, A1, -46 dB, Standard pacing):
   --threshold <dB>|auto           Noise floor -60..0 (default -46), auto estimates first
   --preset standard|calm|relaxed|fluid|energetic|tight   Pacing (default standard)
   --min-pause <ms> --min-speech <ms> --lead-in <ms> --tail <ms>   Override one timing
+  --min-cut-spacing <ms>          Thin out cuts at most this far apart (default 0, off)
+  --cut-scope selection|dialogue  Cut every track in the range, or only under speech clips (default selection)
   --yes                           Confirm the cut
   --json                          One JSON object on stdout
   --timeout <s>                   Per host call (default 1800)
@@ -53,6 +56,7 @@ export function parseCliArgs(argv) {
     parsed = parseArgs({args:joinValues(argv), allowPositionals:true, strict:true, options:{
       scope:{type:'string'}, tracks:{type:'string'}, threshold:{type:'string'}, preset:{type:'string'},
       'min-pause':{type:'string'}, 'min-speech':{type:'string'}, 'lead-in':{type:'string'}, tail:{type:'string'},
+      'min-cut-spacing':{type:'string'}, 'cut-scope':{type:'string'},
       yes:{type:'boolean'}, json:{type:'boolean'}, timeout:{type:'string'}, engine:{type:'string'}, help:{type:'boolean'}
     }});
   } catch (error) { throw new UsageError(error.message); }
@@ -84,6 +88,15 @@ export function parseCliArgs(argv) {
     settings[field] = value;
   }
 
+  settings.minCutSpacing = 0;
+  if (values['min-cut-spacing'] !== undefined) {
+    const value = Number(values['min-cut-spacing']);
+    if (values['min-cut-spacing'] === '' || !Number.isFinite(value) || value < 0 || value > 10000) throw new UsageError('--min-cut-spacing must be 0 to 10000 ms.');
+    settings.minCutSpacing = value;
+  }
+  const cutScope = values['cut-scope'] ?? CLI_DEFAULTS.cutScope;
+  if (!CUT_SCOPES.includes(cutScope)) throw new UsageError(`Unknown cut scope ${cutScope}.`);
+
   const autoThreshold = values.threshold === 'auto';
   if (values.threshold !== undefined && !autoThreshold) {
     const threshold = Number(values.threshold);
@@ -95,5 +108,5 @@ export function parseCliArgs(argv) {
   if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) throw new UsageError('--timeout must be a positive number of seconds.');
 
   return {command, json:Boolean(values.json), yes:Boolean(values.yes), autoThreshold, timeoutMs:timeoutSeconds * 1000,
-    engine:values.engine, config:{scope, analysisTracks, settings}};
+    engine:values.engine, config:{scope, analysisTracks, settings, cutScope}};
 }

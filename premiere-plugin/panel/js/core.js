@@ -248,7 +248,8 @@ export function buildSnapshot({
   respectLocks = true,
   mode = 'delete_ripple',
   renderedMixdown = null,
-  selectedSections = null
+  selectedSections = null,
+  cutScope = null
 }) {
   if (!sequence || !Number.isInteger(sequence.fpsNumerator) || !Number.isInteger(sequence.fpsDenominator)) {
     throw new Error('The sequence frame rate is missing.');
@@ -344,12 +345,14 @@ export function buildSnapshot({
       minPause: parameters.minPause,
       minSpeech: parameters.minSpeech,
       leadIn: parameters.leadIn,
-      tail: parameters.tail
+      tail: parameters.tail,
+      ...(Number.isFinite(parameters.minCutSpacing) ? { minCutSpacing: parameters.minCutSpacing } : {})
     },
     channelMode,
     mode,
     rippleDriver,
-    respectLocks
+    respectLocks,
+    ...(cutScope ? { cutScope } : {})
   };
 }
 
@@ -469,7 +472,8 @@ export function summarizePlan(plan) {
     removedTicks += toBigIntTicks(interval.endTicks) - toBigIntTicks(interval.startTicks);
   }
   return {
-    cutCount: intervals.length,
+    // A cut is one pause; its pieces between clip boundaries are intervals.
+    cutCount: Array.isArray(plan.cuts) ? plan.cuts.length : intervals.length,
     razorCount: (plan.razorPoints || []).length,
     removedSeconds: Number(removedTicks) / TICKS_PER_SECOND_NUMBER,
     rejectionCount: (plan.rejections || []).length,

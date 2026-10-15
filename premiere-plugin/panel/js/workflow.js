@@ -6,7 +6,7 @@ import {createTranslator} from './i18n.js';
 
 const ENGLISH = createTranslator('en');
 
-export const DEFAULT_SETTINGS = Object.freeze({threshold:-45, minPause:160, minSpeech:160, leadIn:160, tail:160});
+export const DEFAULT_SETTINGS = Object.freeze({threshold:-45, minPause:160, minSpeech:160, leadIn:160, tail:160, minCutSpacing:0});
 // Timing presets in milliseconds: [minPause, minSpeech, leadIn, tail]. Names: preset.<key>.
 export const PRESETS = Object.freeze({
   mine: {values:[160,160,160,160]},
@@ -58,6 +58,10 @@ export function settingsToParameters(values, t = ENGLISH) {
     if (!Number.isFinite(value) || value < 0 || value > 10000) throw Error(t('error.timings'));
     result[field] = value / 1000;
   }
+  // Optional: 0 or missing switches the thinning of close cuts off.
+  const spacing = Number(values.minCutSpacing ?? 0);
+  if (!Number.isFinite(spacing) || spacing < 0 || spacing > 10000) throw Error(t('error.timings'));
+  result.minCutSpacing = spacing / 1000;
   return result;
 }
 
@@ -123,7 +127,8 @@ export function createWorkflow({host, engine, ui, t = ENGLISH}) {
         const render = (await take('renderAudio', {...renderPayload, outputPath:engine.renderPath()})).parsed;
         checkCancelled(); ui.busy(true, t(verifying ? 'status.verifyMix' : 'status.detect'), true, verifying ? 'verify' : 'detect');
         const snapshot = buildSnapshot({sequence:{...state.parsed, startTicks:'0'}, tracks, analysisTracks, parameters,
-          selectedSections:sections, renderedMixdown:{mediaPath:render.mediaPath, analysisTracks}, channelMode:'loudest'});
+          selectedSections:sections, renderedMixdown:{mediaPath:render.mediaPath, analysisTracks}, channelMode:'loudest',
+          cutScope:config.cutScope === 'dialogue' ? 'dialogue' : 'selection'});
         const result = await engine.run(snapshot, {estimate:estimateOnly});
         checkCancelled();
         if (!result.ok) throw Error(result.error);

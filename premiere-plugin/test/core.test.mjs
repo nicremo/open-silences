@@ -880,3 +880,24 @@ test('skipped ranges are counted per reason, the most frequent first', () => {
   assert.deepEqual(summarizeSkipped({ intervals: [] }), { count: 0, reasons: [] });
   assert.equal(summarizePlan(plan).skipped.count, 4);
 });
+
+test('a cut is one pause, its pieces between clip boundaries do not count twice', () => {
+  const plan = { cuts: [{}, {}], intervals: [
+    { startTicks: '0', endTicks: '10' }, { startTicks: '10', endTicks: '20' }, { startTicks: '30', endTicks: '40' }
+  ] };
+  assert.equal(summarizePlan(plan).cutCount, 2);
+  assert.equal(summarizePlan({ intervals: plan.intervals }).cutCount, 3);
+});
+
+test('cut scope and cut spacing reach the engine only when given', () => {
+  const base = {
+    sequence: baseSequence, tracks: baseTracks(), analysisTracks: [{ kind: 'audio', index: 0 }],
+    parameters: { thresholdDb: -35, minPause: 0.3, minSpeech: 0.2, leadIn: 0.2, tail: 0.2 }, channelMode: 'loudest'
+  };
+  const legacy = buildSnapshot(base);
+  assert.equal('cutScope' in legacy, false);
+  assert.equal('minCutSpacing' in legacy.parameters, false);
+  const chosen = buildSnapshot({ ...base, cutScope: 'selection', parameters: { ...base.parameters, minCutSpacing: 1 } });
+  assert.equal(chosen.cutScope, 'selection');
+  assert.equal(chosen.parameters.minCutSpacing, 1);
+});

@@ -1452,3 +1452,126 @@ fn invalid_transition_ranges_are_errors() {
         .unwrap_err()
         .contains("invalid transition range"));
 }
+
+/// One dialogue clip over the whole timeline plus a video clip, rendered.
+fn rendered_fixture(pauses: Vec<(f64, f64)>) -> Fixture {
+    let mut fixture = Fixture::new()
+        .analysis(&[("audio", 0)])
+        .track(
+            "audio",
+            0,
+            "dialogue",
+            false,
+            false,
+            vec![clip("a", 0.0, 10.0, "raw.wav")],
+        )
+        .track(
+            "video",
+            0,
+            "other",
+            false,
+            false,
+            vec![clip("v", 0.0, 10.0, "v.mov")],
+        )
+        .source("native.wav", pauses);
+    rendered(&mut fixture);
+    fixture
+}
+
+#[test]
+fn rendered_edges_round_inwards_to_whole_frames_with_a_tiny_tolerance() {
+    let plan = rendered_fixture(vec![(1.01, 2.03), (3.000_000_01, 3.999_999_99)])
+        .build()
+        .unwrap();
+    let frames: Vec<(i64, i64)> = plan
+        .intervals
+        .iter()
+        .map(|interval| (interval.start_frame, interval.end_frame))
+        .collect();
+    // 1.01 s is frame 25.25: the cut starts at frame 26. 2.03 s is frame 50.75:
+    // it ends at frame 50. A ten thousandth of a frame counts as on the grid.
+    assert_eq!(frames, vec![(26, 50), (75, 100)]);
+    assert_eq!(plan.intervals[0].start_ticks, 26 * FRAME_25);
+}
+
+#[test]
+fn a_single_frame_is_a_valid_rendered_cut() {
+    let plan = rendered_fixture(vec![(1.0, 1.04)]).build().unwrap();
+    assert_eq!(plan.intervals.len(), 1);
+    assert_eq!(plan.removed_ticks, FRAME_25);
+}
+
+#[test]
+fn the_selection_scope_cuts_outside_dialogue_clips() {
+    let mut fixture = Fixture::new()
+        .analysis(&[("audio", 0)])
+        .track(
+            "audio",
+            0,
+            "dialogue",
+            false,
+            false,
+            vec![clip("a", 0.0, 5.0, "raw.wav")],
+        )
+        .track(
+            "video",
+            0,
+            "other",
+            false,
+            false,
+            vec![clip("v", 0.0, 10.0, "v.mov")],
+        )
+        .source("native.wav", vec![(2.0, 3.0), (6.0, 8.0)]);
+    rendered(&mut fixture);
+    fixture.snapshot["cutScope"] = json!("selection");
+    let plan = fixture.build().unwrap();
+    let starts: Vec<i64> = plan.intervals.iter().map(|i| i.start_ticks).collect();
+    assert_eq!(starts, vec![2 * SECOND, 6 * SECOND]);
+    fixture.snapshot["cutScope"] = json!("dialogue");
+    assert_eq!(fixture.build().unwrap().intervals.len(), 1);
+    fixture.snapshot["cutScope"] = json!("everything");
+    assert!(fixture.build().unwrap_err().contains("cutScope"));
+}
+
+#[test]
+fn a_pause_across_a_clip_boundary_is_one_cut_with_two_pieces() {
+    let mut fixture = Fixture::new()
+        .analysis(&[("audio", 0)])
+        .track(
+            "audio",
+            0,
+            "dialogue",
+            false,
+            false,
+            vec![
+                clip("a", 0.0, 5.0, "raw.wav"),
+                clip("b", 5.0, 10.0, "raw.wav"),
+            ],
+        )
+        .source("native.wav", vec![(4.0, 6.0), (8.0, 9.0)]);
+    rendered(&mut fixture);
+    let plan = fixture.build().unwrap();
+    assert_eq!(plan.cuts.len(), 2);
+    assert_eq!(plan.cuts[0].removed_ticks, 2 * SECOND);
+    assert_eq!(plan.intervals.len(), 3);
+    let owners: Vec<usize> = plan.intervals.iter().map(|interval| interval.cut).collect();
+    assert_eq!(owners, vec![0, 0, 1]);
+}
+
+#[test]
+fn sections_trim_the_pauses_before_the_frame_rounding() {
+    let mut fixture = rendered_fixture(vec![(0.5, 2.0), (2.5, 4.0)]);
+    fixture.snapshot["selectedSections"] =
+        json!([{"startTicks": ticks(1.0).to_string(), "endTicks": ticks(3.0).to_string()}]);
+    let plan = fixture.build().unwrap();
+    let ranges: Vec<(i64, i64)> = plan
+        .intervals
+        .iter()
+        .map(|interval| (interval.start_ticks, interval.end_ticks))
+        .collect();
+    // 2.5 s is frame 62.5 at 25 fps, so the second cut starts at frame 63.
+    assert_eq!(
+        ranges,
+        vec![(SECOND, 2 * SECOND), (63 * FRAME_25, 3 * SECOND)]
+    );
+}

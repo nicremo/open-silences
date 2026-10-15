@@ -5,8 +5,8 @@ import {createTranslator} from '../panel/js/i18n.js';
 const seq={identity:'doc:target',endTicks:'2540160000000',sections:{readable:true,inTicks:null,outTicks:null,selectedSections:[]}};
 test('defaults use -45 dB and four 160 ms values with label correct names',()=>{
  assert.equal(DEFAULT_SETTINGS.threshold,-45);
- assert.deepEqual(settingsToParameters(DEFAULT_SETTINGS),{thresholdDb:-45,minPause:.16,minSpeech:.16,leadIn:.16,tail:.16});
- assert.deepEqual(settingsToParameters({...DEFAULT_SETTINGS,leadIn:100,tail:300}),{thresholdDb:-45,minPause:.16,minSpeech:.16,leadIn:.1,tail:.3});
+ assert.deepEqual(settingsToParameters(DEFAULT_SETTINGS),{thresholdDb:-45,minPause:.16,minSpeech:.16,leadIn:.16,tail:.16,minCutSpacing:0});
+ assert.deepEqual(settingsToParameters({...DEFAULT_SETTINGS,leadIn:100,tail:300,minCutSpacing:1000}),{thresholdDb:-45,minPause:.16,minSpeech:.16,leadIn:.1,tail:.3,minCutSpacing:1});
  assert.equal(settingsToParameters({...DEFAULT_SETTINGS,threshold:-60}).thresholdDb,-60);
  assert.throws(()=>settingsToParameters({...DEFAULT_SETTINGS,threshold:-61}));
  assert.throws(()=>settingsToParameters({...DEFAULT_SETTINGS,tail:10001}));

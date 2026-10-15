@@ -209,7 +209,7 @@ function cancelEngine() {
 let sequence = null, step = 1, busy = false;
 // Rendered parts that depend on the language, kept so a switch can redraw them.
 let summaryParts = null, lastPreview = null, lastResult = null, lastPhase = null, lastBackup = null;
-const fields = ['threshold', ...TIMING_FIELDS];
+const fields = ['threshold', ...TIMING_FIELDS, 'minCutSpacing'];
 // Settings saved before version 3 used other field names. The label of each
 // field is unchanged, so values move to the field with the same label.
 const LEGACY_FIELDS = {noiseLevel:'threshold', minSilence:'minPause', minTalk:'minSpeech', marginBefore:'leadIn', marginAfter:'tail'};
@@ -297,8 +297,14 @@ function updatePreset() {
   $('preset').value=Object.entries(PRESETS).find(([,preset])=>preset.values.every((v,i)=>v===Number($(fields[i+1]).value)))?.[0] || 'custom';
 }
 updatePreset();
+const CUT_SCOPE_KEY = 'open-silences-cut-scope';
+function storedCutScope() {
+  try { const value=localStorage.getItem(CUT_SCOPE_KEY); return value==='dialogue' ? 'dialogue' : 'selection'; } catch (_) { return 'selection'; }
+}
+for (const input of document.querySelectorAll('input[name="cutScope"]')) input.checked=input.value===storedCutScope();
 function config() { return {
   scope:document.querySelector('input[name="scope"]:checked').value,
+  cutScope:document.querySelector('input[name="cutScope"]:checked')?.value || 'selection',
   analysisTracks:[...document.querySelectorAll('#tracks input:checked')].map(el=>({kind:'audio',index:Number(el.value)})),
   settings:Object.fromEntries(fields.map(field=>[field,$(field).value]))
 }; }
@@ -445,6 +451,8 @@ $('languageContinue').addEventListener('click',()=>{ storeLanguage(t.language); 
 
 function markScope() { markChoices('#scope'); }
 $('scope').addEventListener('change',markScope); markScope();
+$('cutScope').addEventListener('change',()=>{ markChoices('#cutScope'); try { localStorage.setItem(CUT_SCOPE_KEY, config().cutScope); } catch (_) {} });
+markChoices('#cutScope');
 
 const initialLanguage=storedLanguage();
 applyLanguage(initialLanguage || resolveLanguage(hostLocale()));

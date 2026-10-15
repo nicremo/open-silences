@@ -231,6 +231,28 @@ impl TrackRole {
     }
 }
 
+/// Where a rendered timeline may be cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CutScope {
+    /// Every track inside the selected sections.
+    Selection,
+    /// Only time covered by an enabled clip on a selected dialogue track.
+    Dialogue,
+}
+
+impl CutScope {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "selection" => Ok(CutScope::Selection),
+            "dialogue" => Ok(CutScope::Dialogue),
+            other => Err(format!("unknown cutScope {other}")),
+        }
+    }
+}
+
+/// Tolerance of the frame rounding, in frames.
+pub const FRAME_TOLERANCE: f64 = 0.0001;
+
 // ---------------------------------------------------------------------------
 // Snapshot protocol
 // ---------------------------------------------------------------------------
@@ -284,6 +306,9 @@ pub struct SnapshotJson {
     pub mode: String,
     pub ripple_driver: String,
     pub respect_locks: bool,
+    /// `selection` or `dialogue`. Missing means `dialogue`.
+    #[serde(default)]
+    pub cut_scope: Option<String>,
 }
 
 /// Explicit disjoint editing ranges. The rendered audio still covers the full timeline.
@@ -610,6 +635,7 @@ pub struct PlanRequest {
     pub mode: PlanMode,
     pub ripple_driver: RippleDriver,
     pub respect_locks: bool,
+    pub cut_scope: CutScope,
 }
 
 // ---------------------------------------------------------------------------
@@ -629,6 +655,25 @@ pub struct PlannedInterval {
     /// an item that starts at or after this interval's end left by this amount.
     #[serde(serialize_with = "ser_i64_as_string")]
     pub cumulative_removed_ticks: i64,
+    /// Index into `Plan::cuts`. An interval is one piece of a cut between
+    /// existing clip boundaries.
+    pub cut: usize,
+}
+
+/// One cut as the user sees it: a pause on the frame grid. Its pieces between
+/// existing clip boundaries are the intervals that point to it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutRange {
+    #[serde(serialize_with = "ser_i64_as_string")]
+    pub start_ticks: i64,
+    #[serde(serialize_with = "ser_i64_as_string")]
+    pub end_ticks: i64,
+    pub start_frame: i64,
+    pub end_frame: i64,
+    /// Ticks this cut removes, the sum of its pieces.
+    #[serde(serialize_with = "ser_i64_as_string")]
+    pub removed_ticks: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -711,6 +756,8 @@ pub struct MediaUsage {
 pub struct Plan {
     pub ticks_per_frame: i64,
     pub frame_rate: f64,
+    /// The cuts in timeline order. Every cut has at least one interval.
+    pub cuts: Vec<CutRange>,
     pub intervals: Vec<PlannedInterval>,
     pub razor_points: Vec<RazorPoint>,
     pub removals: Vec<RemovalOp>,
@@ -816,28 +863,25 @@ pub fn build_plan(
     if request.analysis_tracks.is_empty() {
         return Err("no analysis track selected".to_string());
     }
-    let silent_ranges;
+    let rendered = request.analysis_source == AnalysisSource::RenderedMixdown;
     let mut protected: Vec<(i64, i64)> = Vec::new();
     let mut media_usage: std::collections::BTreeMap<String, (usize, usize)> =
         std::collections::BTreeMap::new();
-    if request.analysis_source == AnalysisSource::RenderedMixdown {
+    // Candidate cuts in ticks on the frame grid, in timeline order.
+    let candidates: Vec<(i64, i64)> = if rendered {
         let media = request
             .rendered_mixdown
             .as_deref()
             .ok_or("rendered_mixdown requires a native timeline render")?;
-        let intervals = source_intervals(media)?;
-        let mut ranges = Vec::with_capacity(intervals.len());
-        for (start, end) in &intervals {
-            if *start < 0.0 || end <= start {
-                return Err("invalid rendered timeline interval".to_string());
-            }
-            ranges.push((seconds_to_ticks(*start)?, seconds_to_ticks(*end)?));
+        let pauses = source_intervals(media)?;
+        let valid = |start: f64, end: f64| {
+            start.is_finite() && end.is_finite() && start >= 0.0 && end > start
+        };
+        if pauses.iter().any(|&(start, end)| !valid(start, end)) {
+            return Err("invalid rendered timeline interval".to_string());
         }
-        ranges.sort_unstable();
-        // Only time covered by an enabled clip on a selected dialogue track can
-        // be judged as a pause. Rendered silence elsewhere is never cut.
-        silent_ranges = intersect_sorted(&merge_sorted(&ranges), &dialogue_coverage(request));
-        media_usage.insert(media.to_string(), (1, intervals.len()));
+        media_usage.insert(media.to_string(), (1, pauses.len()));
+        rendered_cuts(request, &pauses, ticks_per_frame)
     } else {
         // --- analysis phase: only the selected dialogue tracks contribute -------
         let mut track_silences: Vec<(TrackId, Vec<(i64, i64)>)> = Vec::new();
@@ -968,62 +1012,58 @@ pub fn build_plan(
                 gathered_ranges.push((start, end));
             }
         }
-        silent_ranges = merge_sorted(&gathered_ranges);
-    }
-
-    // --- clip to the selected range and snap conservatively -----------------
-    let mut snapped: Vec<(i64, i64)> = Vec::new();
-    for (start, end) in silent_ranges {
-        for &(section_start, section_end) in &request.selected_sections {
-            let Some((start, end)) = overlap(start, end, section_start, section_end) else {
-                continue;
-            };
-            let start = request.sequence.snap_ceil(start, ticks_per_frame);
-            let end = request.sequence.snap_floor(end, ticks_per_frame);
-            if end - start >= ticks_per_frame {
-                snapped.push((start, end));
+        let silent_ranges = merge_sorted(&gathered_ranges);
+        // --- clip to the selected range and snap conservatively -------------
+        let mut snapped: Vec<(i64, i64)> = Vec::new();
+        for (start, end) in silent_ranges {
+            for &(section_start, section_end) in &request.selected_sections {
+                let Some((start, end)) = overlap(start, end, section_start, section_end) else {
+                    continue;
+                };
+                let start = request.sequence.snap_ceil(start, ticks_per_frame);
+                let end = request.sequence.snap_floor(end, ticks_per_frame);
+                if end - start >= ticks_per_frame {
+                    snapped.push((start, end));
+                }
             }
         }
-    }
-    let snapped = merge_sorted(&snapped);
-    // A removal shorter than this is a visible jump without a real gain.
-    let min_cut = min_cut_ticks(ticks_per_frame);
-    let snapped: Vec<(i64, i64)> = snapped
-        .into_iter()
-        .filter(|(start, end)| end - start >= min_cut)
-        .collect();
+        // A removal shorter than this is a visible jump without a real gain.
+        let min_cut = min_cut_ticks(ticks_per_frame);
+        merge_sorted(&snapped)
+            .into_iter()
+            .filter(|(start, end)| end - start >= min_cut)
+            .collect()
+    };
+
     // Partition at existing clip boundaries. Every removal then has one exact
     // middle segment per affected track, even on an already edited timeline.
-    let snapped = if request.analysis_source == AnalysisSource::RenderedMixdown {
-        let mut pieces = Vec::new();
-        for (start, end) in snapped {
-            let mut boundaries = BTreeSet::from([start, end]);
-            for track in &request.tracks {
-                for clip in &track.clips {
-                    for boundary in [clip.start_ticks, clip.end_ticks] {
-                        if start < boundary && boundary < end {
-                            if boundary % ticks_per_frame != 0 {
-                                return Err(
-                                    "clip boundary is not on the video frame grid".to_string()
-                                );
-                            }
-                            boundaries.insert(boundary);
+    let mut pieces: Vec<(usize, i64, i64)> = Vec::with_capacity(candidates.len());
+    for (cut, &(start, end)) in candidates.iter().enumerate() {
+        if !rendered {
+            pieces.push((cut, start, end));
+            continue;
+        }
+        let mut boundaries = BTreeSet::from([start, end]);
+        for track in &request.tracks {
+            for clip in &track.clips {
+                for boundary in [clip.start_ticks, clip.end_ticks] {
+                    if start < boundary && boundary < end {
+                        if boundary % ticks_per_frame != 0 {
+                            return Err("clip boundary is not on the video frame grid".to_string());
                         }
+                        boundaries.insert(boundary);
                     }
                 }
             }
-            let points: Vec<_> = boundaries.into_iter().collect();
-            pieces.extend(points.windows(2).map(|pair| (pair[0], pair[1])));
         }
-        pieces
-    } else {
-        snapped
-    };
+        let points: Vec<_> = boundaries.into_iter().collect();
+        pieces.extend(points.windows(2).map(|pair| (cut, pair[0], pair[1])));
+    }
 
     // Drop every candidate that touches a range we could not analyse.
     let protected = merge_sorted(&protected);
-    let mut unblocked: Vec<(i64, i64)> = Vec::with_capacity(snapped.len());
-    for (start, end) in snapped {
+    let mut unblocked: Vec<(usize, i64, i64)> = Vec::with_capacity(pieces.len());
+    for (cut, start, end) in pieces {
         if protected
             .iter()
             .any(|range| overlap(start, end, range.0, range.1).is_some())
@@ -1036,27 +1076,45 @@ pub fn build_plan(
                 "the range overlaps a clip that could not be analysed".to_string(),
             );
         } else {
-            unblocked.push((start, end));
+            unblocked.push((cut, start, end));
         }
     }
 
     // --- validation of every clip that would be touched or shifted ----------
-    let mut accepted: Vec<(i64, i64)> = Vec::new();
-    for (start, end) in unblocked {
+    let mut accepted: Vec<(usize, i64, i64)> = Vec::new();
+    for (cut, start, end) in unblocked {
         match validate_range(request, start, end) {
-            Ok(()) => accepted.push((start, end)),
+            Ok(()) => accepted.push((cut, start, end)),
             Err((reason, detail)) => plan.skip(&request.sequence, start, end, reason, detail),
         }
     }
 
-    for (start, end) in &accepted {
+    let mut cut_of_candidate: Vec<Option<usize>> = vec![None; candidates.len()];
+    for &(candidate, start, end) in &accepted {
+        let cut = match cut_of_candidate[candidate] {
+            Some(cut) => cut,
+            None => {
+                let (cut_start, cut_end) = candidates[candidate];
+                plan.cuts.push(CutRange {
+                    start_ticks: cut_start,
+                    end_ticks: cut_end,
+                    start_frame: request.sequence.frame_of(cut_start, ticks_per_frame),
+                    end_frame: request.sequence.frame_of(cut_end, ticks_per_frame),
+                    removed_ticks: 0,
+                });
+                cut_of_candidate[candidate] = Some(plan.cuts.len() - 1);
+                plan.cuts.len() - 1
+            }
+        };
+        plan.cuts[cut].removed_ticks += end - start;
         plan.removed_ticks = plan.removed_ticks.saturating_add(end - start);
         plan.intervals.push(PlannedInterval {
-            start_ticks: *start,
-            end_ticks: *end,
-            start_frame: request.sequence.frame_of(*start, ticks_per_frame),
-            end_frame: request.sequence.frame_of(*end, ticks_per_frame),
+            start_ticks: start,
+            end_ticks: end,
+            start_frame: request.sequence.frame_of(start, ticks_per_frame),
+            end_frame: request.sequence.frame_of(end, ticks_per_frame),
             cumulative_removed_ticks: plan.removed_ticks,
+            cut,
         });
     }
 
@@ -1168,6 +1226,58 @@ pub fn build_plan(
         .collect();
 
     Ok(plan)
+}
+
+/// Pauses in timeline seconds to cuts on the frame grid, see docs/DETECTION.md,
+/// planner rules: every pause is intersected with the selected sections, its
+/// start moves to the next frame and its end to the previous one, with a
+/// tolerance of a ten thousandth of a frame.
+fn rendered_cuts(
+    request: &PlanRequest,
+    pauses: &[(f64, f64)],
+    ticks_per_frame: i64,
+) -> Vec<(i64, i64)> {
+    let seconds = |ticks: i64| ticks as f64 / TICKS_PER_SECOND as f64;
+    let fps = request.sequence.frame_rate();
+    let mut pieces: Vec<(f64, f64)> = Vec::new();
+    for &(start, end) in pauses {
+        for &(section_start, section_end) in &request.selected_sections {
+            let piece_start = start.max(seconds(section_start));
+            let piece_end = end.min(seconds(section_end));
+            if piece_start <= piece_end {
+                pieces.push((piece_start, piece_end));
+            }
+        }
+    }
+    pieces.sort_by(|first, second| {
+        first
+            .0
+            .partial_cmp(&second.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let cuts = pieces.into_iter().filter_map(|(start, end)| {
+        let first = (start * fps - FRAME_TOLERANCE).ceil();
+        let last = (end * fps + FRAME_TOLERANCE).floor();
+        (first < last).then(|| {
+            (
+                (first as i64).saturating_mul(ticks_per_frame),
+                (last as i64).saturating_mul(ticks_per_frame),
+            )
+        })
+    });
+    if request.cut_scope == CutScope::Selection {
+        return cuts.collect();
+    }
+    // Dialogue scope: only time under an enabled clip of a selected dialogue
+    // track. Clip edges lie on the frame grid, so the pieces stay on it.
+    let coverage = dialogue_coverage(request);
+    cuts.flat_map(|cut| intersect_sorted(&[cut], &coverage))
+        .filter_map(|(start, end)| {
+            let start = request.sequence.snap_ceil(start, ticks_per_frame);
+            let end = request.sequence.snap_floor(end, ticks_per_frame);
+            (end > start).then_some((start, end))
+        })
+        .collect()
 }
 
 /// Every clip the operation could touch must be in a supported state, and a
@@ -1527,6 +1637,10 @@ impl PlanRequest {
             mode: PlanMode::parse(&snapshot.mode)?,
             ripple_driver: RippleDriver::parse(&snapshot.ripple_driver)?,
             respect_locks: snapshot.respect_locks,
+            cut_scope: match snapshot.cut_scope.as_deref() {
+                None => CutScope::Dialogue,
+                Some(value) => CutScope::parse(value)?,
+            },
         })
     }
 }

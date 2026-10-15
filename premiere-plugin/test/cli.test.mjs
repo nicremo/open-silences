@@ -47,15 +47,15 @@ import {parseCliArgs, UsageError, CLI_DEFAULTS} from '../panel/cli/args.mjs';
 test('defaults are entire timeline, A1, -46 dB and the Standard pacing',()=>{
   const parsed = parseCliArgs(['preview']);
   assert.equal(parsed.command, 'preview');
-  assert.deepEqual(parsed.config, {scope:'entire', analysisTracks:[{kind:'audio', index:0}],
-    settings:{threshold:-46, minPause:160, minSpeech:160, leadIn:160, tail:160}});
+  assert.deepEqual(parsed.config, {scope:'entire', analysisTracks:[{kind:'audio', index:0}], cutScope:'selection',
+    settings:{threshold:-46, minPause:160, minSpeech:160, leadIn:160, tail:160, minCutSpacing:0}});
   assert.equal(parsed.autoThreshold, false);
   assert.equal(parsed.yes, false);
   assert.equal(CLI_DEFAULTS.threshold, -46);
 });
 test('presets, single timing overrides, tracks, scope and auto threshold',()=>{
   const parsed = parseCliArgs(['cut','--yes','--preset','calm','--tail','90','--tracks','A1,a3','--scope','inout','--threshold','auto','--json']);
-  assert.deepEqual(parsed.config.settings, {threshold:-46, minPause:600, minSpeech:160, leadIn:220, tail:90});
+  assert.deepEqual(parsed.config.settings, {threshold:-46, minPause:600, minSpeech:160, leadIn:220, tail:90, minCutSpacing:0});
   assert.deepEqual(parsed.config.analysisTracks, [{kind:'audio', index:0}, {kind:'audio', index:2}]);
   assert.equal(parsed.config.scope, 'inout');
   assert.equal(parsed.autoThreshold, true);
@@ -117,7 +117,7 @@ test('preview reports the cuts with the standard settings and changes nothing',a
   const out = await runCli(['preview','--json'], fake);
   assert.equal(out.code, EXIT.ok, out.stderr);
   assert.deepEqual(out.json(), {ok:true, cutCount:1, removedSeconds:1, rangeSeconds:10, skipped:{count:0, reasons:[]}, noiseFloorEstimated:false,
-    settings:{threshold:-46, minPause:160, minSpeech:160, leadIn:160, tail:160}});
+    settings:{threshold:-46, minPause:160, minSpeech:160, leadIn:160, tail:160, minCutSpacing:0}});
   assert.equal(fake.calls.includes('prepareCut'), false);
   assert.equal(fake.snapshots[0].snapshot.parameters.thresholdDb, -46);
 });
@@ -169,4 +169,12 @@ test('a missing bridge during a workflow command also exits with code 3',async()
   fake.client.call = async () => { throw new BridgeUnavailable('The Open Silences bridge is not running.'); };
   const out = await runCli(['preview','--json'], fake);
   assert.equal(out.code, EXIT.bridge);
+});
+
+test('cut scope and cut spacing are options with safe defaults',()=>{
+  const parsed = parseCliArgs(['preview','--cut-scope','dialogue','--min-cut-spacing','800']);
+  assert.equal(parsed.config.cutScope, 'dialogue');
+  assert.equal(parsed.config.settings.minCutSpacing, 800);
+  assert.throws(()=>parseCliArgs(['preview','--cut-scope','all']), UsageError);
+  assert.throws(()=>parseCliArgs(['preview','--min-cut-spacing','-1']), UsageError);
 });
