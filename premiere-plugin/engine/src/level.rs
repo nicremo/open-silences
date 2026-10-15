@@ -7,6 +7,23 @@ pub const VALUES_PER_SECOND: f64 = 50.0;
 /// Quietest level. Digital silence and everything quieter maps here.
 pub const FLOOR_DB: f64 = -60.0;
 
+/// Rate the levels are measured at. A render at a whole multiple of it keeps
+/// every n-th sample frame without a filter; any other rate is measured as it is.
+pub const ANALYSIS_RATE: u32 = 16_000;
+
+/// Sample frames per measured frame, and measured frames per value, for a
+/// render at `rate`. See docs/DETECTION.md, stage 1.
+pub fn analysis_grid(rate: u32, values_per_second: f64) -> (usize, usize) {
+    let step = if rate >= ANALYSIS_RATE && rate.is_multiple_of(ANALYSIS_RATE) {
+        (rate / ANALYSIS_RATE) as usize
+    } else {
+        1
+    };
+    let measured = f64::from(rate) / step as f64;
+    let window = ((measured / values_per_second).floor() as usize).max(1);
+    (step, window)
+}
+
 /// RMS amplitude to the stored level: dBFS floored at `FLOOR_DB`, kept as a
 /// 32 bit float and rounded to two decimals.
 pub fn amplitude_to_db(rms: f64) -> f64 {
@@ -119,6 +136,17 @@ fn round_half_up(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whole_multiples_of_the_analysis_rate_keep_every_nth_frame() {
+        assert_eq!(analysis_grid(48_000, 50.0), (3, 320));
+        assert_eq!(analysis_grid(96_000, 50.0), (6, 320));
+        assert_eq!(analysis_grid(32_000, 50.0), (2, 320));
+        assert_eq!(analysis_grid(16_000, 50.0), (1, 320));
+        assert_eq!(analysis_grid(44_100, 50.0), (1, 882));
+        assert_eq!(analysis_grid(11_025, 50.0), (1, 220));
+        assert_eq!(analysis_grid(8_000, 50.0), (1, 160));
+    }
 
     #[test]
     fn amplitude_maps_to_rounded_dbfs_with_a_floor() {

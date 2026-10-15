@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::level::amplitude_to_db;
+use crate::level::{amplitude_to_db, analysis_grid};
 use crate::process::{self, CancelToken};
 
 pub const DEFAULT_TIMEOUT_SECONDS: u64 = 1800;
@@ -98,6 +98,9 @@ pub struct AudioAnalysis {
     pub value_duration_sec: f64,
     /// Frames per analysis value.
     pub window_frames: usize,
+    /// Sample frames per measured frame. Above one only every n-th frame of
+    /// the file is measured, without a filter, see `level::analysis_grid`.
+    pub decimation: usize,
     /// Effective duration: the shorter of the container duration and the decoded
     /// audio. Cut points are never emitted beyond this value.
     pub duration_sec: f64,
@@ -371,8 +374,8 @@ pub fn analyze(
     }
 
     let info = probe_audio(file, decoder, options.timeout, cancel)?;
-    let window_frames =
-        ((info.sample_rate as f64 / options.values_per_second).floor() as u64).max(1) as usize;
+    let (decimation, measured) = analysis_grid(info.sample_rate, options.values_per_second);
+    let window_frames = decimation * measured;
     // The window length is an integer number of frames, so the real resolution is
     // sample_rate / window_frames. Reporting the requested value would drift the
     // time axis for non divisible rates (11025 Hz at 50, 44100 Hz at 1000).
@@ -415,11 +418,7 @@ pub fn analyze(
         info.channels as usize
     };
 
-    let mut sums = vec![0.0f64; channels];
-    let mut frames_in_window = 0usize;
-    let mut frame_index = 0usize;
-    let mut total_frames: u64 = 0;
-    let mut rms_values: Vec<f64> = Vec::new();
+    let mut windows = Windower::new(channels, measured, decimation);
     let mut pending = [0u8; 4];
     let mut pending_len = 0usize;
 
@@ -442,19 +441,10 @@ pub fn analyze(
                     if !sample.is_finite() {
                         return Err(format!(
                             "decoder produced a non finite sample ({sample}) at sample index {}",
-                            total_frames * channels as u64 + frame_index as u64
+                            windows.sample_index()
                         ));
                     }
-                    accumulate(
-                        sample,
-                        channels,
-                        &mut sums,
-                        &mut frame_index,
-                        &mut frames_in_window,
-                        window_frames,
-                        &mut rms_values,
-                        &mut total_frames,
-                    );
+                    windows.push(sample);
                     pending_len = 0;
                 }
             }
@@ -470,26 +460,17 @@ pub fn analyze(
                 if !sample.is_finite() {
                     return Err(format!(
                         "decoder produced a non finite sample ({sample}) at sample index {}",
-                        total_frames * channels as u64 + frame_index as u64
+                        windows.sample_index()
                     ));
                 }
-                accumulate(
-                    sample,
-                    channels,
-                    &mut sums,
-                    &mut frame_index,
-                    &mut frames_in_window,
-                    window_frames,
-                    &mut rms_values,
-                    &mut total_frames,
-                );
+                windows.push(sample);
             }
             let remainder = data.len() % 4;
             if remainder > 0 {
                 pending[..remainder].copy_from_slice(&data[data.len() - remainder..]);
                 pending_len = remainder;
             }
-            if rms_values.len() > 200_000_000 {
+            if windows.values() > 200_000_000 {
                 return Err("decoded stream is implausibly long".to_string());
             }
             Ok(())
@@ -506,14 +487,11 @@ pub fn analyze(
             pending_len
         ));
     }
-    if frame_index != 0 {
+    let (rms_values, total_frames, partial) = windows.finish();
+    if partial != 0 {
         return Err(format!(
-            "decoder produced {} trailing samples that do not complete a sample frame",
-            frame_index
+            "decoder produced {partial} trailing samples that do not complete a sample frame"
         ));
-    }
-    if frames_in_window > 0 {
-        rms_values.push(window_rms_of(&sums, frames_in_window, channels));
     }
     let trailing_samples_ignored = 0usize;
 
@@ -534,6 +512,7 @@ pub fn analyze(
             requested_values_per_second: options.values_per_second,
             value_duration_sec,
             window_frames,
+            decimation,
             duration_sec,
             decoded_duration_sec,
             channels_analyzed: channels as u32,
@@ -562,8 +541,9 @@ fn window_rms_of(sums: &[f64], frames: usize, channels: usize) -> f64 {
         .fold(0.0f64, f64::max)
 }
 
-/// Read Premiere's lossless PCM16 timeline render without a decoder process.
-/// Metadata chunks are skipped, PCM is streamed, malformed bounds fail closed.
+/// Read Premiere's lossless timeline render (PCM16, PCM24 or float32) without a
+/// decoder process. Metadata chunks are skipped, samples are streamed,
+/// malformed bounds fail closed.
 pub fn analyze_native_wav(
     file: &str,
     options: &AnalyzeOptions,
@@ -598,7 +578,7 @@ pub fn analyze_native_wav_range(
         let mut header = [0u8; 12];
         input.read_exact(&mut header).map_err(|e| e.to_string())?;
         if &header[0..4] != b"RIFF" || &header[8..12] != b"WAVE" {
-            return Err("expected a RIFF PCM16 WAV render (maximum 4 GiB)".to_string());
+            return Err("expected a RIFF WAV render (maximum 4 GiB)".to_string());
         }
         let container_end = u32::from_le_bytes(header[4..8].try_into().unwrap()) as u64 + 8;
         if container_end != length {
@@ -633,26 +613,41 @@ pub fn analyze_native_wav_range(
                     if format.is_some() || size < 16 {
                         return Err("invalid WAV format chunk".to_string());
                     }
-                    let mut fmt = [0u8; 16];
-                    input.read_exact(&mut fmt).map_err(|e| e.to_string())?;
-                    let tag = u16::from_le_bytes(fmt[0..2].try_into().unwrap());
+                    let mut fmt = [0u8; 40];
+                    let known = size.min(40) as usize;
+                    input
+                        .read_exact(&mut fmt[..known])
+                        .map_err(|e| e.to_string())?;
+                    let mut tag = u16::from_le_bytes(fmt[0..2].try_into().unwrap());
                     let channels = u16::from_le_bytes(fmt[2..4].try_into().unwrap()) as u32;
                     let rate = u32::from_le_bytes(fmt[4..8].try_into().unwrap());
                     let byte_rate = u32::from_le_bytes(fmt[8..12].try_into().unwrap());
                     let align = u16::from_le_bytes(fmt[12..14].try_into().unwrap()) as u32;
                     let bits = u16::from_le_bytes(fmt[14..16].try_into().unwrap());
-                    if tag != 1
-                        || bits != 16
-                        || !(1..=64).contains(&channels)
+                    if tag == WAVE_FORMAT_EXTENSIBLE {
+                        // The sub format GUID starts with the plain format tag.
+                        if known < 40 || fmt[26..40] != KSDATAFORMAT_SUFFIX {
+                            return Err("invalid extensible WAV format chunk".to_string());
+                        }
+                        tag = u16::from_le_bytes(fmt[24..26].try_into().unwrap());
+                    }
+                    let encoding = match (tag, bits) {
+                        (1, 16) => SampleEncoding::Pcm16,
+                        (1, 24) => SampleEncoding::Pcm24,
+                        (3, 32) => SampleEncoding::Float32,
+                        _ => {
+                            return Err("unsupported WAV format, expected PCM16, PCM24 or float32"
+                                .to_string())
+                        }
+                    };
+                    if !(1..=64).contains(&channels)
                         || !(1..=768000).contains(&rate)
-                        || align != channels * 2
+                        || align != channels * u32::from(bits / 8)
                         || byte_rate != rate * align
                     {
-                        return Err(
-                            "unsupported WAV format, expected interleaved PCM16".to_string()
-                        );
+                        return Err("inconsistent WAV format chunk".to_string());
                     }
-                    format = Some((channels, rate, align));
+                    format = Some((channels, rate, align, encoding));
                 }
                 b"data" => {
                     if data.is_some() {
@@ -664,7 +659,7 @@ pub fn analyze_native_wav_range(
             }
             offset = next;
         }
-        let (channels, rate, align) = format.ok_or("WAV format chunk missing")?;
+        let (channels, rate, align, encoding) = format.ok_or("WAV format chunk missing")?;
         let (body, size) = data.ok_or("WAV data chunk missing")?;
         if size == 0 || size % align as u64 != 0 {
             return Err("WAV data does not contain complete sample frames".to_string());
@@ -685,7 +680,8 @@ pub fn analyze_native_wav_range(
             }
         };
         let analysed = end_frame - first_frame;
-        let window = ((rate as f64 / options.values_per_second).floor() as usize).max(1);
+        let (decimation, measured) = analysis_grid(rate, options.values_per_second);
+        let window = decimation * measured;
         let effective = rate as f64 / window as f64;
         if (effective - options.values_per_second).abs() / options.values_per_second > 0.1 {
             return Err("native WAV resolution deviates too much".to_string());
@@ -696,10 +692,10 @@ pub fn analyze_native_wav_range(
         input
             .seek(SeekFrom::Start(body + first_frame * align as u64))
             .map_err(|e| e.to_string())?;
-        let mut sums = vec![0.0; channels as usize];
-        let (mut frame_index, mut in_window, mut total) = (0usize, 0usize, 0u64);
-        let mut rms = Vec::new();
+        let mut windows = Windower::new(channels as usize, measured, decimation);
         let mut buffer = [0u8; 65536];
+        // Whole sample frames per read, so no sample is split between reads.
+        let chunk = (buffer.len() / align as usize * align as usize) as u64;
         let mut remaining = analysed * align as u64;
         while remaining > 0 {
             if cancel.is_cancelled() {
@@ -708,28 +704,38 @@ pub fn analyze_native_wav_range(
             if started.elapsed() >= options.timeout {
                 return Err("native WAV analysis timed out".to_string());
             }
-            let take = remaining.min(buffer.len() as u64) as usize;
+            let take = remaining.min(chunk) as usize;
             input
                 .read_exact(&mut buffer[..take])
                 .map_err(|e| e.to_string())?;
-            for bytes in buffer[..take].as_chunks::<2>().0 {
-                let sample = i16::from_le_bytes(*bytes) as f64 / 32768.0;
-                accumulate(
-                    sample,
-                    channels as usize,
-                    &mut sums,
-                    &mut frame_index,
-                    &mut in_window,
-                    window,
-                    &mut rms,
-                    &mut total,
-                );
+            match encoding {
+                SampleEncoding::Pcm16 => {
+                    for bytes in buffer[..take].as_chunks::<2>().0 {
+                        windows.push(i16::from_le_bytes(*bytes) as f64 / 32768.0);
+                    }
+                }
+                SampleEncoding::Pcm24 => {
+                    for bytes in buffer[..take].as_chunks::<3>().0 {
+                        let value = i32::from_le_bytes([0, bytes[0], bytes[1], bytes[2]]) >> 8;
+                        windows.push(value as f64 / 8_388_608.0);
+                    }
+                }
+                SampleEncoding::Float32 => {
+                    for bytes in buffer[..take].as_chunks::<4>().0 {
+                        let sample = f32::from_le_bytes(*bytes) as f64;
+                        if !sample.is_finite() {
+                            return Err(format!(
+                                "non finite sample at sample index {}",
+                                windows.sample_index()
+                            ));
+                        }
+                        windows.push(sample);
+                    }
+                }
             }
             remaining -= take as u64;
         }
-        if in_window > 0 {
-            rms.push(window_rms_of(&sums, in_window, channels as usize));
-        }
+        let (rms, _, _) = windows.finish();
         let duration = frames as f64 / rate as f64;
         let analysed_duration = analysed as f64 / rate as f64;
         let db_values = rms.iter().map(|r| amplitude_to_db(*r)).collect();
@@ -745,6 +751,7 @@ pub fn analyze_native_wav_range(
                 requested_values_per_second: options.values_per_second,
                 value_duration_sec: window as f64 / rate as f64,
                 window_frames: window,
+                decimation,
                 duration_sec: analysed_duration,
                 decoded_duration_sec: analysed_duration,
                 channels_analyzed: channels,
@@ -758,33 +765,94 @@ pub fn analyze_native_wav_range(
     run().map_err(|error| format!("native WAV {file}: {error}"))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn accumulate(
-    sample: f64,
+/// `WAVE_FORMAT_EXTENSIBLE`: the real format sits in the sub format GUID.
+const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
+/// Bytes 2 to 15 of every `KSDATAFORMAT_SUBTYPE_*` GUID.
+const KSDATAFORMAT_SUFFIX: [u8; 14] = [
+    0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
+];
+
+/// Sample encodings the native reader accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SampleEncoding {
+    Pcm16,
+    Pcm24,
+    Float32,
+}
+
+/// Groups interleaved samples into analysis windows. With a decimation above
+/// one only every n-th sample frame is measured, the others are skipped
+/// without a filter.
+struct Windower {
     channels: usize,
-    sums: &mut [f64],
-    frame_index: &mut usize,
-    frames_in_window: &mut usize,
-    window_frames: usize,
-    rms_values: &mut Vec<f64>,
-    total_frames: &mut u64,
-) {
-    if channels == 0 {
-        return;
-    }
-    sums[*frame_index] += sample * sample;
-    *frame_index += 1;
-    if *frame_index == channels {
-        *frame_index = 0;
-        *total_frames += 1;
-        *frames_in_window += 1;
-        if *frames_in_window == window_frames {
-            rms_values.push(window_rms_of(sums, *frames_in_window, channels));
-            for value in sums.iter_mut() {
-                *value = 0.0;
-            }
-            *frames_in_window = 0;
+    window: usize,
+    decimation: usize,
+    sums: Vec<f64>,
+    channel: usize,
+    phase: usize,
+    in_window: usize,
+    frames: u64,
+    rms: Vec<f64>,
+}
+
+impl Windower {
+    fn new(channels: usize, window: usize, decimation: usize) -> Self {
+        Self {
+            channels,
+            window: window.max(1),
+            decimation: decimation.max(1),
+            sums: vec![0.0; channels],
+            channel: 0,
+            phase: 0,
+            in_window: 0,
+            frames: 0,
+            rms: Vec::new(),
         }
+    }
+
+    fn push(&mut self, sample: f64) {
+        if self.channels == 0 {
+            return;
+        }
+        if self.phase == 0 {
+            self.sums[self.channel] += sample * sample;
+        }
+        self.channel += 1;
+        if self.channel < self.channels {
+            return;
+        }
+        self.channel = 0;
+        self.frames += 1;
+        if self.phase == 0 {
+            self.in_window += 1;
+            if self.in_window == self.window {
+                self.rms
+                    .push(window_rms_of(&self.sums, self.in_window, self.channels));
+                self.sums.iter_mut().for_each(|value| *value = 0.0);
+                self.in_window = 0;
+            }
+        }
+        self.phase = (self.phase + 1) % self.decimation;
+    }
+
+    /// Samples seen so far, for error messages.
+    fn sample_index(&self) -> u64 {
+        self.frames * self.channels as u64 + self.channel as u64
+    }
+
+    /// Completed values so far.
+    fn values(&self) -> usize {
+        self.rms.len()
+    }
+
+    /// RMS values including a last partial window, complete sample frames, and
+    /// samples of an incomplete last frame.
+    fn finish(mut self) -> (Vec<f64>, u64, usize) {
+        if self.in_window > 0 {
+            self.rms
+                .push(window_rms_of(&self.sums, self.in_window, self.channels));
+        }
+        (self.rms, self.frames, self.channel)
     }
 }
 

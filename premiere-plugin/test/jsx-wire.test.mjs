@@ -622,11 +622,12 @@ test('a batch for another sequence or with a stale fingerprint touches nothing',
 
 const PRESET_XML = [
   '<ExporterParam><ParamIdentifier>ADBEAudioRatePerSecond</ParamIdentifier><ParamType>2</ParamType><ParamValue>48000</ParamValue></ExporterParam>',
-  '<ExporterParam><ParamIdentifier>ADBEAudioNumChannels</ParamIdentifier><ParamOrdinalValue>1</ParamOrdinalValue><ParamValue>2</ParamValue></ExporterParam>'
+  '<ExporterParam><ParamIdentifier>ADBEAudioNumChannels</ParamIdentifier><ParamOrdinalValue>1</ParamOrdinalValue><ParamValue>2</ParamValue></ExporterParam>',
+  '<ExporterParam><ParamIdentifier>ADBEAudioSampleType</ParamIdentifier><ParamValue>1</ParamValue></ExporterParam>'
 ].join('\n');
 
 /** Active sequence with two audio tracks, a file system and an exporter. */
-function renderHost({ refuseMono = false } = {}) {
+function renderHost({ refuseMono = false, rateTicks = '5292000' } = {}) {
   const files = new Map();
   const presetPath = '/Premiere.app/Contents/MediaIO/systempresets/3F3F3F3F_57415645/Waveform Audio 48kHz 16-bit.epr';
   files.set(presetPath, PRESET_XML);
@@ -643,12 +644,13 @@ function renderHost({ refuseMono = false } = {}) {
   const sequence = {
     sequenceID: 'seq', name: 'seq',
     videoTracks: { numTracks: 0 },
-    audioTracks: { numTracks: 2, 0: audioTrack('Voice', false), 1: audioTrack('Music', false) }
+    audioTracks: { numTracks: 2, 0: audioTrack('Voice', false), 1: audioTrack('Music', false) },
+    getSettings: () => ({ audioSampleRate: { ticks: rateTicks } })
   };
   const exports = [];
   sequence.exportAsMediaDirect = (out, preset) => {
     exports.push({ out, preset: files.get(preset), musicMuted: sequence.audioTracks[1].muted });
-    if (refuseMono && preset.includes('16k')) return false;
+    if (refuseMono && preset.includes('analysis-mono')) return false;
     files.set(out, 'RIFF'.padEnd(64, 'x'));
     return true;
   };
@@ -661,17 +663,25 @@ function renderHost({ refuseMono = false } = {}) {
   return { sandbox, sequence, exports, payload };
 }
 
-test('the analysis render is 16 kHz mono and other tracks are muted only during the export', () => {
+test('the analysis render is mono 32 bit float at the sequence rate and other tracks are muted only during the export', () => {
   const { sandbox, sequence, exports, payload } = renderHost();
   const reply = JSON.parse(vm.runInContext(`OS_renderAudio(${JSON.stringify(payload)})`, sandbox));
   assert.equal(reply.ok, true, reply.error);
   assert.equal(reply.mono, true);
   assert.equal(reply.mediaPath, '/tmp/os/timeline.wav');
   assert.equal(exports.length, 1);
-  assert.match(exports[0].preset, /<ParamValue>16000<\/ParamValue>/);
+  assert.match(exports[0].preset, /ADBEAudioRatePerSecond<\/ParamIdentifier><ParamType>2<\/ParamType><ParamValue>48000<\/ParamValue>/);
   assert.match(exports[0].preset, /ADBEAudioNumChannels<\/ParamIdentifier><ParamOrdinalValue>1<\/ParamOrdinalValue><ParamValue>1<\/ParamValue>/);
+  assert.match(exports[0].preset, /ADBEAudioSampleType<\/ParamIdentifier><ParamValue>4<\/ParamValue>/);
   assert.equal(exports[0].musicMuted, true);
   assert.equal(sequence.audioTracks[1].muted, false, 'the mute state is restored');
+});
+
+test('the analysis render keeps a 44.1 kHz sequence at its own rate', () => {
+  const { sandbox, exports, payload } = renderHost({ rateTicks: '5760000' });
+  const reply = JSON.parse(vm.runInContext(`OS_renderAudio(${JSON.stringify(payload)})`, sandbox));
+  assert.equal(reply.ok, true, reply.error);
+  assert.match(exports[0].preset, /ADBEAudioRatePerSecond<\/ParamIdentifier><ParamType>2<\/ParamType><ParamValue>44100<\/ParamValue>/);
 });
 
 test('a render with a stale state fingerprint exports and mutes nothing', () => {

@@ -237,6 +237,7 @@ fn analyze(options: &Options, cancel: &CancelToken) -> CliResult {
         "requestedValuesPerSecond": analysis.requested_values_per_second,
         "valueDuration": value_duration,
         "windowFrames": analysis.window_frames,
+        "decimation": analysis.decimation,
         "durationSec": info.duration,
         "sampleRate": info.sample_rate,
         "channels": info.channels,

@@ -9,7 +9,7 @@
 - New cut scope: the whole selection on every track (default) or only under speech clips.
 - Cutting runs in batches of 50 cuts from the end of the timeline while the sequence shows frame numbers. Every frame rate can be cut.
 - Backup, the second render of the mix and the readback are optional. A cancel takes effect between two batches.
-- The analysis render is 16 kHz mono without a copy of the sequence; the other audio tracks are muted only during the export.
+- The analysis render is mono with 32 bit float samples at the sequence rate, without a copy of the sequence; the other audio tracks are muted only during the export. Levels are measured at 16 kHz on every n-th sample, so no resampling filter softens them. The engine reads PCM16, PCM24 and float32 WAV natively.
 - A transition only stops the pause it lies in, and the panel, the preview and the CLI name the reason when a range stays uncut.
 - Pacing presets set all four timing values to the same value.
 

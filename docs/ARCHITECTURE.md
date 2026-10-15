@@ -10,7 +10,7 @@ Cuts run in batches of up to 50 cuts per host call, from the end of the timeline
 flowchart LR
     Panel[CEP panel] --> Host[ExtendScript adapter]
     Host --> Backup[Optional native sequence backup]
-    Host --> Audio[Premiere audio render, 16 kHz mono]
+    Host --> Audio[Premiere audio render, mono float]
     Panel --> Engine[Rust block levels, pause detector and planner]
     Audio --> Engine
     Engine --> Plan[Frame-aligned cut plan]
@@ -18,7 +18,7 @@ flowchart LR
     Host --> Result[Batches of cuts, optional readback]
 ```
 
-The workflow rechecks identity and state before analysis and mutation. An optional backup is made before the analysis. The chosen audio tracks are exported as a 16 kHz mono WAV: the other audio tracks are muted for the export and restored afterwards, and Premiere's own 48 kHz preset is the fallback. An optional second export checks the audio mix right before the cut. An optional final readback compares every surviving clip with the plan, its source range for clips at normal speed, and proves the backup unchanged.
+The workflow rechecks identity and state before analysis and mutation. An optional backup is made before the analysis. The chosen audio tracks are exported as a mono WAV with 32 bit float samples at the sequence rate, so no resampling filter touches the mix; the engine measures it at 16 kHz by keeping every n-th sample. The other audio tracks are muted for the export and restored afterwards, and Premiere's own 48 kHz preset is the fallback. An optional second export checks the audio mix right before the cut. An optional final readback compares every surviving clip with the plan, its source range for clips at normal speed, and proves the backup unchanged.
 
 The adapter embeds JSON2 because a fresh ExtendScript context can lack JSON. Startup cannot depend on another extension supplying it.
 

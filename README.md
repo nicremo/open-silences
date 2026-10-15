@@ -104,8 +104,8 @@ The package is written to `premiere-plugin/dist/open-silences/`. The build insta
 ```mermaid
 flowchart LR
     A[Choose range and voice tracks] --> B[Optional sequence backup]
-    B --> C[Premiere renders the voice tracks as 16 kHz mono]
-    C --> D[Rust engine: 20 ms levels, refined pause edges]
+    B --> C[Premiere renders the voice tracks as mono float]
+    C --> D[Rust engine: 20 ms levels at 16 kHz, refined pause edges]
     D --> E[Frame aligned plan in exact ticks]
     E --> F{Preview: N pauses, X s}
     F -->|Cut now| G[Batches of 50 cuts from the end]

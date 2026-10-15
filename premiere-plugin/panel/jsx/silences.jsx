@@ -1963,9 +1963,25 @@ function os_cutRateSupported(rate) {
   return Boolean(rate) && rate.fps > 0 && rate.numerator > 0 && rate.denominator > 0;
 }
 
-/** Sample rate and channel count of the analysis render. */
-var OS_ANALYSIS_RATE = 16000;
+/** Channel count and WAV sample type of the analysis render: mono, 32 bit float. */
 var OS_ANALYSIS_CHANNELS = 1;
+var OS_ANALYSIS_SAMPLE_TYPE = 4;
+
+/** Premiere ticks per second. */
+var OS_TICKS_PER_SECOND = 254016000000;
+
+/** Audio sample rate of a sequence in Hz, or null when it is not readable. */
+function os_sequenceAudioRate(sequence) {
+  var read = os_read(function () {
+    return sequence.getSettings().audioSampleRate;
+  });
+  if (read.error || !read.value) {
+    return null;
+  }
+  var ticks = Number(read.value.ticks);
+  var rate = ticks > 0 ? Math.round(OS_TICKS_PER_SECOND / ticks) : 0;
+  return rate >= 8000 && rate <= 768000 ? rate : null;
+}
 
 /**
  * Replaces the value of one exporter parameter in preset XML, whichever order
@@ -1989,10 +2005,11 @@ function os_setPresetParam(text, identifier, value) {
 
 /**
  * Export preset for the analysis render: Premiere's own WAV preset rewritten
- * to 16 kHz mono in a temporary file, so the render is small and contains the
- * mono mix the levels are measured on. Null when no WAV preset exists.
+ * to mono, 32 bit float, at the sample rate of the sequence, in a temporary
+ * file. No resampling filter touches the mix; the engine measures it at 16 kHz
+ * by keeping every n-th sample. Null when no WAV preset exists.
  */
-function os_analysisPreset() {
+function os_analysisPreset(rate) {
   var system = os_wavePreset();
   if (!system) {
     return null;
@@ -2005,15 +2022,21 @@ function os_analysisPreset() {
     }
     var text = source.read();
     source.close();
-    var rewritten = os_setPresetParam(
-      os_setPresetParam(text, 'ADBEAudioRatePerSecond', String(OS_ANALYSIS_RATE)),
-      'ADBEAudioNumChannels',
-      String(OS_ANALYSIS_CHANNELS)
-    );
+    var rewritten = os_setPresetParam(text, 'ADBEAudioNumChannels', String(OS_ANALYSIS_CHANNELS));
     if (!rewritten) {
       return null;
     }
-    var target = new File(Folder.temp.fsName + '/open-silences-analysis-16k-mono.epr');
+    // Without a readable rate, or without these parameters, the preset keeps
+    // its own values; the engine reads 16, 24 and 32 bit at any rate.
+    var withRate = rate ? os_setPresetParam(rewritten, 'ADBEAudioRatePerSecond', String(rate)) : null;
+    if (withRate) {
+      rewritten = withRate;
+    }
+    var withType = os_setPresetParam(rewritten, 'ADBEAudioSampleType', String(OS_ANALYSIS_SAMPLE_TYPE));
+    if (withType) {
+      rewritten = withType;
+    }
+    var target = new File(Folder.temp.fsName + '/open-silences-analysis-mono.epr');
     target.encoding = 'UTF-8';
     if (!target.open('w')) {
       return null;
@@ -2036,8 +2059,9 @@ function os_muteRestorer(track, muted) {
 /**
  * Render the chosen audio tracks of the active sequence. The other audio
  * tracks are muted for the export and restored afterwards, also after a
- * failure, so no copy of the sequence is needed. The render is 16 kHz mono;
- * when Premiere refuses that preset its own 48 kHz preset renders instead.
+ * failure, so no copy of the sequence is needed. The render is mono 32 bit
+ * float at the sequence rate; when Premiere refuses that preset its own 48 kHz
+ * preset renders instead.
  */
 function OS_renderAudio(payloadJson) {
   var original = app.project.activeSequence;
@@ -2080,7 +2104,7 @@ function OS_renderAudio(payloadJson) {
       }
     }
     var started = new Date().getTime();
-    var preset = os_analysisPreset();
+    var preset = os_analysisPreset(os_sequenceAudioRate(original));
     var status = preset ? original.exportAsMediaDirect(output.fsName, preset, 0) : false;
     output = new File(payload.outputPath);
     var mono = Boolean(preset) && output.exists && output.length >= 44;

@@ -11,11 +11,13 @@ This document specifies how Open Silences decides which parts of the timeline ar
 
 ## Input
 
-Premiere renders the selected dialogue tracks as a mono WAV. The analysed range runs from the start of the first selected section to the end of the last one. The engine reads the PCM natively.
+Premiere renders the selected dialogue tracks as a mono WAV with 32 bit float samples at the sample rate of the sequence, so no resampling filter changes the mix. When Premiere refuses that preset, its own 48 kHz stereo 16 bit preset renders instead. The analysed range runs from the start of the first selected section to the end of the last one. The engine reads PCM16, PCM24 and float32 natively.
 
 ## Stage 1: levels
 
-The analysed range is split into consecutive windows of `max(1, floor(sampleRate / 50))` sample frames, 20 ms at the usual rates. The grid starts at the first sample of the analysed range. A trailing partial window is a value of its own, computed from its own number of frames.
+Levels are measured at 16 kHz. When the sample rate is a whole multiple of 16 kHz (32, 48 or 96 kHz), only every n-th sample frame is measured, n = sampleRate / 16000, starting with the first frame of the analysed range. The frames in between are skipped without a filter. Any other sample rate is measured as it is, n = 1.
+
+The measured frames are split into consecutive windows of `max(1, floor(sampleRate / n / 50))` frames: 320 frames, 20 ms, at 48 kHz. The grid starts at the first sample of the analysed range. A trailing partial window is a value of its own, computed from its own number of measured frames.
 
 For every window the RMS is the square root of the mean of the squared samples. With several channels the loudest channel wins; a mono render has one channel.
 
