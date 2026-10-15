@@ -10,6 +10,7 @@ import {
   applyWorkflow,
   findExactItemIndex,
   hostScriptFor,
+  scriptString,
   interpretHostReply,
   fingerprintTracks,
   preflightPlan,
@@ -747,6 +748,18 @@ test('host scripts encode string arguments exactly once', () => {
   assert.throws(() => hostScriptFor('unknown', {}), /Unknown host call/);
 });
 
+test('fingerprints travel as separate strings after the payload, never inside it', () => {
+  const items = '{"ok":true,"tracks":[{"name":"a\u2028b"}]}';
+  for (const name of ['prepareCut', 'renderAudio', 'applyBatch']) {
+    const script = hostScriptFor(name, { expectedIdentity: 'doc:seq', expectedItemFingerprint: items, expectedStateFingerprint: 'state' });
+    assert.equal(script.includes('\u2028'), false, 'line separators are escaped for ExtendScript');
+    const args = JSON.parse(`[${script.slice(script.indexOf('(') + 1, -1)}]`);
+    assert.deepEqual(args, [JSON.stringify({ expectedIdentity: 'doc:seq' }), items, 'state']);
+  }
+  const bare = JSON.parse(`[${hostScriptFor('applyBatch', { expectedIdentity: 'x' }).slice('OS_applyBatch('.length, -1)}]`);
+  assert.deepEqual(bare, ['{"expectedIdentity":"x"}', '', '']);
+  assert.equal(scriptString('a\u2029b'), '"a\\u2029b"');
+});
 test('workflow stops before cloning when the read fails', async () => {
   const mocks = hostMocks({ readFails: true });
   const result = await applyWorkflow({ ...mocks });

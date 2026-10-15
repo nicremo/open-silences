@@ -568,16 +568,96 @@ function os_pad2(value) {
   return (value < 10 ? '0' : '') + value;
 }
 
-/** JSON with a clear error when the host has no usable JSON. */
+/**
+ * JSON text of plain data: objects, arrays, strings, finite numbers, booleans
+ * and null, keys in their order. Own serializer: ExtendScript has no native
+ * JSON, the shared engine may carry any script implementation of it, and this
+ * one takes about half the time on a timeline read.
+ */
 function os_json(value) {
-  if (typeof JSON === 'undefined' || !JSON.stringify) {
-    return '{"ok":false,"error":"JSON is not available in this ExtendScript environment."}';
+  var parts = [];
+  os_appendJson(value, parts);
+  return parts.join('');
+}
+
+/** Characters a JSON string escapes; the line separators also break ExtendScript literals. */
+var OS_JSON_ESCAPE = /["\\\u0000-\u001f\u2028\u2029]/;
+var OS_JSON_SHORT = { '"': '\\"', '\\': '\\\\', '\b': '\\b', '\f': '\\f', '\n': '\\n', '\r': '\\r', '\t': '\\t' };
+
+function os_jsonString(text) {
+  if (!OS_JSON_ESCAPE.test(text)) {
+    return '"' + text + '"';
   }
-  return JSON.stringify(value);
+  var out = '"';
+  for (var index = 0; index < text.length; index++) {
+    var character = text.charAt(index);
+    var code = text.charCodeAt(index);
+    if (OS_JSON_SHORT.hasOwnProperty(character)) {
+      out += OS_JSON_SHORT[character];
+    } else if (code < 32 || code === 0x2028 || code === 0x2029) {
+      var hex = code.toString(16);
+      out += '\\u' + '0000'.substring(hex.length) + hex;
+    } else {
+      out += character;
+    }
+  }
+  return out + '"';
+}
+
+function os_appendJson(value, parts) {
+  var type = typeof value;
+  if (value === null || value === undefined || type === 'function') {
+    parts.push('null');
+  } else if (type === 'string') {
+    parts.push(os_jsonString(value));
+  } else if (type === 'number') {
+    parts.push(isFinite(value) ? String(value) : 'null');
+  } else if (type === 'boolean') {
+    parts.push(value ? 'true' : 'false');
+  } else if (Object.prototype.toString.call(value) === '[object Array]') {
+    parts.push('[');
+    for (var index = 0; index < value.length; index++) {
+      if (index > 0) {
+        parts.push(',');
+      }
+      os_appendJson(value[index], parts);
+    }
+    parts.push(']');
+  } else {
+    parts.push('{');
+    var first = true;
+    for (var key in value) {
+      if (!Object.prototype.hasOwnProperty.call(value, key) || value[key] === undefined || typeof value[key] === 'function') {
+        continue;
+      }
+      if (!first) {
+        parts.push(',');
+      }
+      first = false;
+      parts.push(os_jsonString(key), ':');
+      os_appendJson(value[key], parts);
+    }
+    parts.push('}');
+  }
 }
 
 function os_fail(message) {
   return os_json({ ok: false, error: message });
+}
+
+/** A failure the panel can tell apart by `code`. */
+function os_failCode(code, message) {
+  return os_json({ ok: false, error: message, code: code });
+}
+
+/**
+ * The tracks part of an item envelope, so two envelopes compare as text
+ * without parsing. `tracks` is the last key of every envelope.
+ */
+function os_tracksText(envelope) {
+  var text = String(envelope || '');
+  var at = text.indexOf('"tracks":');
+  return at < 0 ? null : text.substring(at);
 }
 
 function os_read(read) {
@@ -1251,16 +1331,19 @@ function os_newSequence(knownIds) {
 /**
  * Make and verify the protected backup before rendering or cutting. The copy
  * is never opened: it is found by its new sequenceID, read once and compared
- * with the item fingerprint the panel has just read. The state fingerprint is
- * checked when the caller sends one.
+ * with the item fingerprint the panel has just read, so a sequence that
+ * changed in between yields a copy that differs and stops here. The state
+ * fingerprint is checked when the caller sends one. Fingerprints may come as
+ * separate arguments, which spares parsing them.
  */
-function OS_prepareCut(payloadJson) {
+function OS_prepareCut(payloadJson, itemFingerprint, stateFingerprint) {
   var target = app.project.activeSequence;
   try {
     var payload = JSON.parse(payloadJson);
-    if (!target || os_identity(target) !== payload.expectedIdentity ||
-        (payload.expectedStateFingerprint && OS_readSequence() !== payload.expectedStateFingerprint) ||
-        os_itemEnvelope(target) !== payload.expectedItemFingerprint) return os_fail('The selection has changed. Please choose the range again.');
+    var expectedTracks = os_tracksText(itemFingerprint || payload.expectedItemFingerprint);
+    var expectedState = stateFingerprint || payload.expectedStateFingerprint;
+    if (!target || os_identity(target) !== payload.expectedIdentity || !expectedTracks ||
+        (expectedState && OS_readSequence() !== expectedState)) return os_fail('The selection has changed. Please choose the range again.');
     var knownIds = os_sequenceIds();
     var cloned = os_read(function () {
       return target.clone();
@@ -1274,10 +1357,7 @@ function OS_prepareCut(payloadJson) {
     if (!bin) return os_fail('The backup bin could not be created.');
     backup.projectItem.moveBin(bin);
     var backupItems = os_itemEnvelope(backup);
-    if (os_json(JSON.parse(backupItems).tracks) !== os_json(JSON.parse(payload.expectedItemFingerprint).tracks)) {
-      return os_fail('The backup does not match the sequence.');
-    }
-    if (os_itemEnvelope(target) !== payload.expectedItemFingerprint) return os_fail('The sequence changed during the backup.');
+    if (os_tracksText(backupItems) !== expectedTracks) return os_fail('The backup does not match the sequence.');
     return os_json({ok:true, backupId:String(backup.sequenceID), backupName:String(backup.name), backupItems:backupItems,
       targetId:String(target.sequenceID), targetIdentity:os_identity(target)});
   } catch (error) { return os_fail('Backup failed: ' + String(error)); }
@@ -2048,8 +2128,11 @@ function os_extractRanges(active, qeSequence, ranges, restore) {
  * unlocked track is sync locked, each piece is razored and the one ripple per
  * piece moves all tracks together. Display format, targeting and sync locks
  * are restored before the call returns, also after a failure.
+ *
+ * Item and state fingerprints, when given, are checked right before the first
+ * cut and fail with code `changed`. They may come as separate arguments.
  */
-function OS_applyBatch(payloadJson) {
+function OS_applyBatch(payloadJson, itemFingerprint, stateFingerprint) {
   var active = app.project.activeSequence;
   var restore = [];
   var removed = 0;
@@ -2062,8 +2145,13 @@ function OS_applyBatch(payloadJson) {
     if (!active || os_identity(active) !== payload.expectedIdentity) {
       return os_fail('The active sequence is not the planned one. Nothing is cut.');
     }
-    if (payload.expectedItemFingerprint && os_itemEnvelope(active) !== payload.expectedItemFingerprint) {
-      return os_fail('The sequence changed since it was read. Nothing is cut.');
+    var expectedItems = itemFingerprint || payload.expectedItemFingerprint;
+    if (expectedItems && os_itemEnvelope(active) !== expectedItems) {
+      return os_failCode('changed', 'The sequence changed since it was read. Nothing is cut.');
+    }
+    var expectedState = stateFingerprint || payload.expectedStateFingerprint;
+    if (expectedState && OS_readSequence() !== expectedState) {
+      return os_failCode('changed', 'The tracks or settings changed since they were read. Nothing is cut.');
     }
     if (payload.intervals.length === 0) {
       return os_json({ ok: true, removed: 0, applied: 0, framesShown: false });
@@ -2308,14 +2396,16 @@ function os_muteRestorer(track, muted) {
  * float at the sequence rate; when Premiere refuses that preset its own 48 kHz
  * preset renders instead.
  */
-function OS_renderAudio(payloadJson) {
+function OS_renderAudio(payloadJson, itemFingerprint, stateFingerprint) {
   var original = app.project.activeSequence;
   var restore = [];
   try {
     var payload = JSON.parse(payloadJson);
+    var expectedItems = itemFingerprint || payload.expectedItemFingerprint;
+    var expectedState = stateFingerprint || payload.expectedStateFingerprint;
     if (!original || os_identity(original) !== payload.expectedIdentity ||
-        os_itemEnvelope(original) !== payload.expectedItemFingerprint ||
-        (payload.expectedStateFingerprint && OS_readSequence() !== payload.expectedStateFingerprint)) {
+        (expectedItems && os_itemEnvelope(original) !== expectedItems) ||
+        (expectedState && OS_readSequence() !== expectedState)) {
       return os_fail('The sequence changed before the audio export.');
     }
     var fallback = os_wavePreset();

@@ -88,12 +88,13 @@ function fakeHost({noSilence = false} = {}) {
   const sequence = {ok:true,name:'Rohschnitt',identity:'doc:target',endTicks:END,fps:25,sections:{readable:true,inTicks:null,outTicks:null,selectedSections:[]},
     tracks,qeAvailable:true,fpsSupported:true,fpsObserved:true,fpsNumerator:25,fpsDenominator:1,zeroPointTicks:'0',sourceTicksReadable:true,mediaIdentityReadable:true,transitionsReadable:true,nativeTimelineAvailable:true};
   const items = {identity:'doc:target', tracks:tracks.map(t => ({kind:t.kind,index:t.index,items:[]}))};
+  const backupItems = JSON.stringify({ok:true, identity:'doc:backup', sequenceID:'backup', tracks:items.tracks});
   const client = {lastUnknown:() => null, call:async name => {
     calls.push(name);
     if (name === 'readSequence') return {ok:true, parsed:sequence, raw:'state'};
     if (name === 'readItems') return {ok:true, parsed:items, raw:'original'};
-    if (name === 'prepareCut') return {ok:true, parsed:{backupId:'backup', backupItems:'protected', backupName:'Rohschnitt BACKUP'}};
-    if (name === 'readItemsOfSequence') return {ok:true, parsed:{...items, identity:'doc:backup'}, raw:'protected'};
+    if (name === 'prepareCut') return {ok:true, parsed:{backupId:'backup', backupItems, backupName:'Rohschnitt BACKUP'}};
+    if (name === 'readItemsOfSequence') return {ok:true, parsed:JSON.parse(backupItems), raw:backupItems};
     if (name === 'renderAudio') return {ok:true, parsed:{mediaPath:'/render.wav'}};
     throw Error(`unexpected ${name}`);
   }};

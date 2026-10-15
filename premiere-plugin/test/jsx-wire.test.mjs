@@ -753,6 +753,24 @@ test('tick arithmetic stays exact beyond double precision and touching pieces jo
   assert.deepEqual(JSON.parse(JSON.stringify(ranges)), [{ startTicks: '30', endTicks: '40' }, { startTicks: '10', endTicks: '25' }]);
 });
 
+test('the first batch checks items and state sent as separate strings and reports a change by code', () => {
+  const { sandbox, log } = batchHost();
+  const items = vm.runInContext('OS_readItems()', sandbox);
+  const state = vm.runInContext('OS_readSequence()', sandbox);
+  const payload = JSON.parse(batchPayload());
+  for (const fingerprints of [
+    { expectedItemFingerprint: items, expectedStateFingerprint: 'stale' },
+    { expectedItemFingerprint: 'stale', expectedStateFingerprint: state }
+  ]) {
+    const reply = JSON.parse(vm.runInContext(hostScriptFor('applyBatch', { ...payload, ...fingerprints }), sandbox));
+    assert.equal(reply.ok, false);
+    assert.equal(reply.code, 'changed');
+  }
+  assert.deepEqual(log, []);
+  const fresh = JSON.parse(vm.runInContext(hostScriptFor('applyBatch', { ...payload, expectedItemFingerprint: items, expectedStateFingerprint: state }), sandbox));
+  assert.equal(fresh.ok, true, fresh.error);
+});
+
 test('a batch for another sequence or with a stale fingerprint touches nothing', () => {
   const other = batchHost();
   const wrong = JSON.parse(vm.runInContext(`OS_applyBatch(${JSON.stringify(batchPayload({ expectedIdentity: 'doc:other' }))})`, other.sandbox));
@@ -854,6 +872,17 @@ test('preset parameters are found in either order inside their block', () => {
   assert.equal(sandbox.os_setPresetParam(swapped, 'ADBEAudioNumChannels', '1'),
     '<ExporterParam><ParamValue>1</ParamValue><ParamIdentifier>ADBEAudioNumChannels</ParamIdentifier></ExporterParam>');
   assert.equal(sandbox.os_setPresetParam(PRESET_XML, 'ADBEMissing', '1'), null);
+});
+
+test('the own serializer writes standard JSON for plain data, escapes and all', () => {
+  const sandbox = vm.createContext({});
+  vm.runInContext(source, sandbox, { filename: 'silences.jsx' });
+  const data = { ok: true, text: 'a"b\\c\nd\u2028e\u0001', list: [1, 2.5, null, true, 'x', []], skip: undefined, call() {}, far: Infinity };
+  const text = sandbox.os_json(data);
+  assert.deepEqual(JSON.parse(text), JSON.parse(JSON.stringify(data)));
+  assert.equal(text.includes('\\u2028'), true, 'line separators are escaped');
+  const plain = { ok: true, tracks: [{ kind: 'video', index: 0, items: [{ startTicks: '1', mediaPath: '/a b/c.mov', speed: 1, disabled: false }] }] };
+  assert.equal(sandbox.os_json(plain), JSON.stringify(plain));
 });
 
 test('an exact clip is found in order with few reads, and out of order by a full pass', () => {

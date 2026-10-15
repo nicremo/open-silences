@@ -21,21 +21,23 @@ test('selected sections merge overlap but preserve disjoint gaps and exact ticks
  const sequence={...seq,endTicks:'10000000000000001',sections:{readable:true,selectedSections:[{startTicks:'10',endTicks:'20'},{startTicks:'15',endTicks:'30'},{startTicks:'10000000000000000',endTicks:'10000000000000001'}]}};
  assert.deepEqual(resolveSections(sequence,'selected'),[{startTicks:'10',endTicks:'30'},{startTicks:'10000000000000000',endTicks:'10000000000000001'}]);
 });
-function harness({fail,wait,plan,confirm=true,t,onBatch}={}) {
+function harness({fail,wait,plan,confirm=true,t,onBatch,backupTracks,changedAtCut=false,now}={}) {
  const calls=[], notices=[], phases=[], previews=[], batches=[]; const tracks=[{kind:'audio',index:0,name:'Voice',locked:false,muted:false,transitions:0,clips:[{id:'clip',startTicks:'0',endTicks:seq.endTicks,sourceInTicks:'0',sourceOutTicks:seq.endTicks,inPointSeconds:0,outPointSeconds:10,speed:1,mediaPath:'/test.mov',projectItemId:'clip',disabled:false,linked:null}]}];
  const sequence={...seq,ok:true,tracks,qeAvailable:true,fpsSupported:true,fpsObserved:true,fpsNumerator:25,fpsDenominator:1,zeroPointTicks:'0',sourceTicksReadable:true,mediaIdentityReadable:true,transitionsReadable:true,nativeTimelineAvailable:true};
  const items={identity:seq.identity,tracks:tracks.map(t=>({kind:t.kind,index:t.index,items:[]}))};
+ const backupItems=JSON.stringify({ok:true,identity:'doc:backup',sequenceID:'backup',tracks:backupTracks||items.tracks});
  const workflow=createWorkflow({host:async(name,payload)=>{
   calls.push(name); if(wait&&name==='readSequence') await wait;
+  if(name==='applyBatch'&&changedAtCut&&payload.expectedItemFingerprint) return {ok:false,code:'changed',error:'The sequence changed since it was read. Nothing is cut.'};
   if(name==='applyBatch'&&fail!==name){ batches.push(payload); onBatch?.(workflow); return {ok:true,parsed:{removed:payload.intervals.length,applied:payload.intervals.length}}; }
   if(fail===name) return {ok:false,error:'controlled failure'};
   if(name==='readSequence') return {ok:true,parsed:sequence,raw:'state'};
   if(name==='readItems') return {ok:true,parsed:items,raw:'original'};
-  if(name==='prepareCut') return {ok:true,parsed:{backupId:'backup',backupItems:'protected',backupName:'Target backup'}};
-  if(name==='readItemsOfSequence') return {ok:true,parsed:{...items,identity:'doc:backup'},raw:'protected'};
+  if(name==='prepareCut') return {ok:true,parsed:{backupId:'backup',backupItems,backupName:'Target backup'}};
+  if(name==='readItemsOfSequence') return {ok:true,parsed:JSON.parse(backupItems),raw:backupItems};
   if(name==='renderAudio') return {ok:true,parsed:{mediaPath:'/render.wav'}};
   throw Error(`unexpected call ${name}`);
- },engine:{renderPath:()=>'/render.wav',run:async()=>{calls.push('engine');return {ok:true,envelope:{plan:plan||{intervals:[],removals:[],razorPoints:[],rejections:[],expectedDurationDeltaTicks:'0',ticksPerFrame:10160640000,frameRate:25},noiseEstimate:-45}};}},ui:{busy:(...args)=>{notices.push(args); if(args[0]&&args[3]) phases.push(args[3]);},backup:()=>{},error:e=>notices.push(e),complete:summary=>notices.push({complete:summary}),estimate:()=>{},confirm:async preview=>{previews.push(preview);return confirm;}},t});
+ },engine:{renderPath:()=>'/render.wav',run:async()=>{calls.push('engine');return {ok:true,envelope:{plan:plan||{intervals:[],removals:[],razorPoints:[],rejections:[],expectedDurationDeltaTicks:'0',ticksPerFrame:10160640000,frameRate:25},noiseEstimate:-45}};}},ui:{busy:(...args)=>{notices.push(args); if(args[0]&&args[3]) phases.push(args[3]);},backup:()=>{},error:e=>notices.push(e),complete:summary=>notices.push({complete:summary}),estimate:()=>{},confirm:async preview=>{previews.push(preview);return confirm;}},t,...(now?{now}:{})});
  return {workflow,calls,notices,phases,previews,batches};
 }
 const config={scope:'entire',settings:DEFAULT_SETTINGS,analysisTracks:[{kind:'audio',index:0}]};
@@ -43,8 +45,37 @@ test('backup is verified before any render or engine run',async()=>{
  const h=harness();await h.workflow.refresh();const result=await h.workflow.run(config);
  assert.equal(result.ok,true,result.error);
  assert.ok(h.calls.indexOf('prepareCut')<h.calls.indexOf('renderAudio'));
- assert.ok(h.calls.indexOf('readItemsOfSequence')<h.calls.indexOf('engine'));
  assert.equal(h.calls.includes('apply'),false,'no silence means no edit');
+ const differing=harness({backupTracks:[]});await differing.workflow.refresh();
+ const stopped=await differing.workflow.run(config);
+ assert.equal(stopped.ok,false);
+ assert.match(stopped.error,/backup/i);
+ assert.equal(differing.calls.includes('renderAudio'),false);
+});
+test('a run right after a refresh reads the sequence once and the items once before the cut',async()=>{
+ const h=harness({plan:manyCuts(3)});await h.workflow.refresh();const result=await h.workflow.run(config);
+ assert.equal(result.ok,true,result.error);
+ const beforeCut=h.calls.slice(0,h.calls.indexOf('applyBatch'));
+ assert.deepEqual(beforeCut.filter(c=>c==='readSequence'||c==='readItems'||c==='readItemsOfSequence'),['readSequence','readItems']);
+ assert.deepEqual(h.calls.slice(h.calls.lastIndexOf('applyBatch')+1),['readItems','readItemsOfSequence'],'readback and backup check follow the cut');
+});
+test('a run long after the refresh reads the sequence again',async()=>{
+ let clock=0;
+ const h=harness({now:()=>clock});await h.workflow.refresh();clock=5000;
+ const result=await h.workflow.run(config,'preview');
+ assert.equal(result.ok,true,result.error);
+ assert.equal(h.calls.filter(c=>c==='readSequence').length,2);
+ const second=await h.workflow.run(config,'preview');
+ assert.equal(second.ok,true,second.error);
+ assert.equal(h.calls.filter(c=>c==='readSequence').length,3,'a reused read is never reused twice');
+});
+test('a timeline that changed by the first batch cuts nothing and says so in the panel language',async()=>{
+ const h=harness({plan:manyCuts(3),changedAtCut:true,t:createTranslator('de')});await h.workflow.refresh();
+ const result=await h.workflow.run(config);
+ assert.equal(result.ok,false);
+ assert.match(result.error,/^Die Timeline hat sich während der Analyse geändert\. Bitte erneut starten\./);
+ assert.doesNotMatch(result.error,/bestätigt/);
+ assert.equal(h.batches.length,0);
 });
 test('failed backup never reaches audio rendering, engine or apply',async()=>{
  const h=harness({fail:'prepareCut'});await h.workflow.refresh();const result=await h.workflow.run(config);
@@ -139,7 +170,9 @@ test('a cut runs in batches of 50 from the end, the fingerprint guards only the 
  assert.equal(result.ok,true,result.error);
  assert.deepEqual(h.batches.map(b=>b.intervals.length),[50,10]);
  assert.equal(h.batches[0].expectedItemFingerprint,'original');
+ assert.equal(h.batches[0].expectedStateFingerprint,'state');
  assert.equal('expectedItemFingerprint' in h.batches[1],false);
+ assert.equal('expectedStateFingerprint' in h.batches[1],false);
  assert.equal(h.batches[0].intervals[0].cut,59);
  assert.equal(h.batches[1].intervals.at(-1).cut,0);
  assert.equal(h.calls.filter(c=>c==='renderAudio').length,1,'the second render is off by default');

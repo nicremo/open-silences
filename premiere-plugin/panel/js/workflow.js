@@ -67,10 +67,14 @@ export function settingsToParameters(values, t = ENGLISH) {
   return result;
 }
 
+/** A sequence read this recently is reused by the next run instead of read again. */
+export const FRESH_READ_MS = 1000;
+
 /** One protected user action: validate, backup, render, plan, cut, read back. */
-export function createWorkflow({host, engine, ui, t = ENGLISH}) {
+export function createWorkflow({host, engine, ui, t = ENGLISH, now = () => Date.now()}) {
   let running = false;
   let sequence = null;
+  let lastRead = null;
   let cancelled = false;
   const take = async(name,payload) => {
     const reply = await host(name,payload);
@@ -80,7 +84,9 @@ export function createWorkflow({host, engine, ui, t = ENGLISH}) {
   const checkCancelled = () => { if (cancelled) throw Error(t('error.cancelled')); };
   async function refresh() {
     if (running) return null;
-    const reply = await take('readSequence'); sequence = reply.parsed; return sequence;
+    const reply = await take('readSequence');
+    sequence = reply.parsed; lastRead = {reply, at:now()};
+    return sequence;
   }
   async function run(config, mode = 'full') {
     if (running) return null;
@@ -94,7 +100,10 @@ export function createWorkflow({host, engine, ui, t = ENGLISH}) {
     try {
       if (!sequence) throw Error(t('error.noSequence'));
       const previousIdentity = sequence.identity;
-      const fresh = await take('readSequence');
+      // A read from just before the run is reused; every later run reads again.
+      const reuse = lastRead && now() - lastRead.at <= FRESH_READ_MS;
+      const fresh = reuse ? lastRead.reply : await take('readSequence');
+      lastRead = null;
       if (fresh.parsed.identity !== previousIdentity) throw Error(t('error.sequenceChanged'));
       sequence = fresh.parsed;
       const sections = resolveSections(sequence, config.scope, t);
@@ -112,21 +121,18 @@ export function createWorkflow({host, engine, ui, t = ENGLISH}) {
       checkCancelled();
       if (!estimateOnly && !previewOnly && safety.backup) {
         ui.busy(true, t('status.backup'), false, 'backup');
-        // The state was read just now and is read again after the backup.
+        // The host compared its copy with this fingerprint; the tracks are checked once more here.
         backup = (await take('prepareCut', {expectedIdentity:sequence.identity, expectedItemFingerprint:original.raw})).parsed;
-        const backupRead = await take('readItemsOfSequence', {sequenceId:backup.backupId});
-        if (backupRead.raw !== backup.backupItems || JSON.stringify(backupRead.parsed.tracks) !== JSON.stringify(original.parsed.tracks)) throw Error(t('error.backupUnverified'));
+        if (JSON.stringify(JSON.parse(backup.backupItems).tracks) !== JSON.stringify(original.parsed.tracks)) throw Error(t('error.backupUnverified'));
         ui.backup(backup.backupName);
       }
       checkCancelled();
-      const state = await take('readSequence');
-      if (state.parsed.identity !== original.parsed.identity) throw Error(t('error.sequenceChanged'));
-      const current = await take('readItems');
-      if (current.raw !== original.raw) throw Error(t('error.timelineChangedBackup'));
+      // The backup leaves the state of the sequence as it was, so the first read
+      // stays the reference. The first batch checks state and items right before
+      // its first cut, everything in between only reads.
+      const state = fresh;
       const tracks = state.parsed.tracks.map(t => ({...t, role:analysisTracks.some(ref => ref.kind === t.kind && ref.index === t.index) ? 'dialogue' : 'other'}));
-      // The state was read just now and is compared again before the cut, so the
-      // render does not read it a third time.
-      const renderPayload = {expectedIdentity:state.parsed.identity, expectedItemFingerprint:original.raw, analysisTracks};
+      const renderPayload = {expectedIdentity:state.parsed.identity, analysisTracks};
       async function analyze(verifying = false) {
         const renderText = t(verifying ? 'status.verifyMix' : estimateOnly ? 'status.estimate' : 'status.audio');
         ui.busy(true, renderText, false, verifying ? 'verify' : 'audio');
@@ -172,27 +178,33 @@ export function createWorkflow({host, engine, ui, t = ENGLISH}) {
         const operations = p => JSON.stringify({intervals:p.intervals, removals:p.removals, razorPoints:p.razorPoints, delta:p.expectedDurationDeltaTicks});
         if (operations(plan) !== operations(checked.plan)) throw Error(t('error.mixChanged'));
       }
-      const before = await take('readItems');
-      const latest = await take('readSequence');
-      if (before.raw !== original.raw || latest.raw !== state.raw) throw Error(t('error.timelineChanged'));
-      const preflight = preflightPlan({tracks:before.parsed.tracks, intervals:plan.intervals});
+      const preflight = preflightPlan({tracks:original.parsed.tracks, intervals:plan.intervals});
       if (preflight.length) throw Error(preflight.join(' '));
-      checkCancelled(); cutting = true;
+      checkCancelled();
       // Batches of cuts from the end of the timeline towards the start. A cancel
-      // takes effect between two batches, a running batch always finishes.
+      // takes effect between two batches, a running batch always finishes. The
+      // first batch compares items and state with the reads above inside the
+      // same host call as its first cut, so nothing can change in between.
       const batches = planBatches(plan);
       let done = 0;
       for (let index = 0; index < batches.length; index++) {
         if (cancelled) throw Error(t('error.cancelledPartial', {done, total:preview.cutCount}));
         ui.busy(true, t('status.cutProgress', {done, total:preview.cutCount}), true, 'cut');
-        await take('applyBatch', {expectedIdentity:state.parsed.identity,
-          ...(index === 0 ? {expectedItemFingerprint:before.raw} : {}), intervals:batches[index].intervals, removals:batches[index].removals});
+        cutting = true;
+        const reply = await host('applyBatch', {expectedIdentity:state.parsed.identity,
+          ...(index === 0 ? {expectedItemFingerprint:original.raw, expectedStateFingerprint:state.raw} : {}),
+          intervals:batches[index].intervals, removals:batches[index].removals});
+        if (!reply?.ok) {
+          // Code changed comes from the checks before the first cut of the run.
+          if (reply?.code === 'changed') { cutting = index > 0; throw Error(t('error.timelineChanged')); }
+          throw Error(reply?.error || t('error.host'));
+        }
         done += batches[index].cutCount;
       }
       if (safety.readback) {
         const after = await take('readItems');
         if (after.parsed.identity !== state.parsed.identity) throw Error(t('error.readbackSwitched'));
-        const problems = verifyCutReadback({before:before.parsed.tracks, intervals:plan.intervals, after:after.parsed.tracks});
+        const problems = verifyCutReadback({before:original.parsed.tracks, intervals:plan.intervals, after:after.parsed.tracks});
         if (problems.length) throw Error(problems.join(' '));
       }
       if (backup) {

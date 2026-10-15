@@ -891,13 +891,40 @@ export function interpretHostReply(text) {
 }
 
 /**
+ * A string literal for evalScript. JSON string syntax is valid ExtendScript
+ * except for the two line separators, which must be escaped there.
+ */
+export function scriptString(value) {
+  return JSON.stringify(String(value)).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
+/** Fingerprints that travel as separate string arguments, in this order. */
+const FINGERPRINT_ARGUMENTS = ['expectedItemFingerprint', 'expectedStateFingerprint'];
+
+/**
+ * The payload as JSON text plus the fingerprints as separate strings. The host
+ * compares fingerprints as text and never parses them, and parsing a few
+ * hundred kilobytes of JSON in ExtendScript takes seconds.
+ */
+function payloadArguments(payload) {
+  const rest = {...payload};
+  const fingerprints = FINGERPRINT_ARGUMENTS.map(key => {
+    const value = rest[key];
+    delete rest[key];
+    return scriptString(value ?? '');
+  });
+  return [scriptString(JSON.stringify(rest)), ...fingerprints].join(', ');
+}
+
+/**
  * The exact evalScript text for one host call.
  *
  * A plain string argument is encoded once, so the JSX receives the string
- * itself. Only the apply payload is JSON text and therefore encoded twice.
+ * itself. Payloads are JSON text and therefore encoded twice; their
+ * fingerprints follow as plain strings.
  */
 export function hostScriptFor(name, payload) {
-  if (name === 'prepareCut') return `OS_prepareCut(${JSON.stringify(JSON.stringify(payload))})`;
+  if (name === 'prepareCut') return `OS_prepareCut(${payloadArguments(payload)})`;
   if (name === 'readItems') {
     return 'OS_readItems()';
   }
@@ -913,10 +940,10 @@ export function hostScriptFor(name, payload) {
     return `OS_applyPlan(${JSON.stringify(JSON.stringify(payload))})`;
   }
   if (name === 'applyBatch') {
-    return `OS_applyBatch(${JSON.stringify(JSON.stringify(payload))})`;
+    return `OS_applyBatch(${payloadArguments(payload)})`;
   }
   if (name === 'renderAudio') {
-    return `OS_renderAudio(${JSON.stringify(JSON.stringify(payload))})`;
+    return `OS_renderAudio(${payloadArguments(payload)})`;
   }
   if (name === 'readItemsOfSequence') {
     return `OS_readItemsOfSequence(${JSON.stringify(payload.sequenceId)})`;
