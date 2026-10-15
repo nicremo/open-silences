@@ -116,7 +116,7 @@ test('preview reports the cuts with the standard settings and changes nothing',a
   const fake = fakeHost();
   const out = await runCli(['preview','--json'], fake);
   assert.equal(out.code, EXIT.ok, out.stderr);
-  assert.deepEqual(out.json(), {ok:true, cutCount:1, removedSeconds:1, rangeSeconds:10, noiseFloorEstimated:false,
+  assert.deepEqual(out.json(), {ok:true, cutCount:1, removedSeconds:1, rangeSeconds:10, skipped:{count:0, reasons:[]}, noiseFloorEstimated:false,
     settings:{threshold:-46, minPause:160, minSpeech:160, leadIn:160, tail:160}});
   assert.equal(fake.calls.includes('prepareCut'), false);
   assert.equal(fake.snapshots[0].snapshot.parameters.thresholdDb, -46);

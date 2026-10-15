@@ -287,6 +287,14 @@ export function buildSnapshot({
       if (muted === undefined) {
         throw new Error(`Mute state of ${kind}${track.index} is not readable.`);
       }
+      // Transition ranges are passed through exactly; null means the host
+      // could not list them and the clip flags decide.
+      const spans = track.transitionSpans === undefined ? {} : {
+        transitionSpans: track.transitionSpans === null ? null : track.transitionSpans.map(span => ({
+          startTicks: normalizeTicks(span.startTicks),
+          endTicks: normalizeTicks(span.endTicks)
+        }))
+      };
       return {
         kind,
         index: track.index,
@@ -294,6 +302,7 @@ export function buildSnapshot({
         locked,
         muted,
         role: ['dialogue', 'music', 'other'].includes(track.role) ? track.role : 'other',
+        ...spans,
         clips: track.clips.map(clip => {
           const disabled = normalizeBoolean(clip.disabled);
           const linked = normalizeBoolean(clip.linked);
@@ -464,8 +473,30 @@ export function summarizePlan(plan) {
     razorCount: (plan.razorPoints || []).length,
     removedSeconds: Number(removedTicks) / TICKS_PER_SECOND_NUMBER,
     rejectionCount: (plan.rejections || []).length,
-    warningCount: (plan.warnings || []).length
+    warningCount: (plan.warnings || []).length,
+    skipped: summarizeSkipped(plan)
   };
+}
+
+/** Reason codes the engine reports for ranges it does not cut. */
+export const SKIP_REASONS = Object.freeze([
+  'transition', 'unsupportedClip', 'lockedTrack', 'noWritableClip', 'unanalysedClip', 'noWritableTrack'
+]);
+
+/**
+ * Counts the ranges the engine left uncut, most frequent reason first. The
+ * panel names the reason, so a plan without cuts never looks like a timeline
+ * without pauses.
+ */
+export function summarizeSkipped(plan) {
+  const counts = new Map();
+  for (const range of plan?.skipped || []) {
+    const reason = SKIP_REASONS.includes(range.reason) ? range.reason : 'unsupportedClip';
+    counts.set(reason, (counts.get(reason) || 0) + 1);
+  }
+  const reasons = [...counts].map(([reason, count]) => ({reason, count}))
+    .sort((a, b) => b.count - a.count || SKIP_REASONS.indexOf(a.reason) - SKIP_REASONS.indexOf(b.reason));
+  return {count: reasons.reduce((sum, entry) => sum + entry.count, 0), reasons};
 }
 
 /* ------------------------------------------------- readback and verification */

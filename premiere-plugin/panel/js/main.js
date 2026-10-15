@@ -246,9 +246,15 @@ function showProgress(phase) {
     return item;
   }));
 }
+/** Sentence about the ranges the engine left uncut, empty when there are none. */
+function skippedText(skipped) {
+  if (!skipped?.count) return '';
+  return t.plural('skipped.text', skipped.count, {reason:t(`skip.${skipped.reasons[0].reason}`)});
+}
 function renderConfirm() {
   if (!lastPreview) return;
-  $('confirmText').textContent = t.plural('confirm.text', lastPreview.cutCount, {seconds:fmt.seconds(lastPreview.removedSeconds), percent:fmt.percent(lastPreview.removedSeconds, lastPreview.rangeSeconds)});
+  const text = t.plural('confirm.text', lastPreview.cutCount, {seconds:fmt.seconds(lastPreview.removedSeconds), percent:fmt.percent(lastPreview.removedSeconds, lastPreview.rangeSeconds)});
+  $('confirmText').textContent = [text, skippedText(lastPreview.skipped)].filter(Boolean).join(' ');
 }
 function confirmCut(preview) {
   status('');
@@ -277,8 +283,10 @@ function renderResult() {
   const summary = lastResult;
   if (!summary) return;
   const cut = summary.cutCount > 0 && !summary.declined;
-  $('resultValue').textContent = summary.declined ? t('result.declined') : cut ? t('result.removed', {seconds:fmt.seconds(summary.removedSeconds)}) : t('result.none');
-  $('resultDetail').textContent = cut ? t.plural('result.cuts', summary.cutCount, {name:summary.backupName}) : t('result.backup', {name:summary.backupName});
+  const blocked = !cut && !summary.declined && summary.skipped?.count > 0;
+  $('resultValue').textContent = summary.declined ? t('result.declined') : cut ? t('result.removed', {seconds:fmt.seconds(summary.removedSeconds)}) : blocked ? t('result.blocked') : t('result.none');
+  const detail = cut ? t.plural('result.cuts', summary.cutCount, {name:summary.backupName}) : t('result.backup', {name:summary.backupName});
+  $('resultDetail').textContent = [skippedText(summary.skipped), detail].filter(Boolean).join(' ');
 }
 function showResult(summary) {
   status('');

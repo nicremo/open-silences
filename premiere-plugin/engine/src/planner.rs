@@ -336,6 +336,20 @@ pub struct TrackJson {
     pub muted: bool,
     pub role: String,
     pub clips: Vec<ClipJson>,
+    /// Exact transition ranges of the track. Missing or `null` means the host
+    /// could not list them, then the per clip flags decide.
+    #[serde(default)]
+    pub transition_spans: Option<Vec<SpanJson>>,
+}
+
+/// A time range in ticks, `[start, end)`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SpanJson {
+    #[serde(deserialize_with = "de_i64_from_string_or_number")]
+    pub start_ticks: i64,
+    #[serde(deserialize_with = "de_i64_from_string_or_number")]
+    pub end_ticks: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -468,6 +482,8 @@ pub struct TrackInfo {
     pub muted: bool,
     pub role: TrackRole,
     pub clips: Vec<ClipInfo>,
+    /// Transition ranges in ticks, `None` when the host could not list them.
+    pub transition_spans: Option<Vec<(i64, i64)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -651,6 +667,34 @@ pub struct Rejection {
     pub reason: String,
 }
 
+/// Why a range was not cut. The panel translates the code, the detail stays
+/// English for logs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SkipReason {
+    /// A transition lies inside the range.
+    Transition,
+    /// A clip the operation touches has a state that cannot be reproduced.
+    UnsupportedClip,
+    /// A locked track would have to move with a ripple.
+    LockedTrack,
+    /// No unlocked clip covers the range.
+    NoWritableClip,
+    /// A clip of an analysis track could not be analysed.
+    UnanalysedClip,
+    /// No unlocked track can perform the ripple.
+    NoWritableTrack,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedRange {
+    pub start_frame: i64,
+    pub end_frame: i64,
+    pub reason: SkipReason,
+    pub detail: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaUsage {
@@ -670,6 +714,8 @@ pub struct Plan {
     pub mutes: Vec<MuteOp>,
     pub rejections: Vec<Rejection>,
     pub warnings: Vec<String>,
+    /// Every candidate range that was not cut, with a translatable reason.
+    pub skipped: Vec<SkippedRange>,
     pub media: Vec<MediaUsage>,
     #[serde(serialize_with = "ser_i64_as_string")]
     pub removed_ticks: i64,
@@ -973,32 +1019,30 @@ pub fn build_plan(
 
     // Drop every candidate that touches a range we could not analyse.
     let protected = merge_sorted(&protected);
-    let snapped: Vec<(i64, i64)> = snapped
-        .into_iter()
-        .filter(|(start, end)| {
-            let blocked = protected.iter().any(|range| overlap(*start, *end, range.0, range.1).is_some());
-            if blocked {
-                plan.warnings.push(format!(
-                    "range at frame {} to {} overlaps a clip that could not be analysed and was skipped",
-                    request.sequence.frame_of(*start, ticks_per_frame),
-                    request.sequence.frame_of(*end, ticks_per_frame)
-                ));
-            }
-            !blocked
-        })
-        .collect();
+    let mut unblocked: Vec<(i64, i64)> = Vec::with_capacity(snapped.len());
+    for (start, end) in snapped {
+        if protected
+            .iter()
+            .any(|range| overlap(start, end, range.0, range.1).is_some())
+        {
+            plan.skip(
+                &request.sequence,
+                start,
+                end,
+                SkipReason::UnanalysedClip,
+                "the range overlaps a clip that could not be analysed".to_string(),
+            );
+        } else {
+            unblocked.push((start, end));
+        }
+    }
 
     // --- validation of every clip that would be touched or shifted ----------
     let mut accepted: Vec<(i64, i64)> = Vec::new();
-    for (start, end) in snapped {
+    for (start, end) in unblocked {
         match validate_range(request, start, end) {
             Ok(()) => accepted.push((start, end)),
-            Err(reason) => plan.warnings.push(format!(
-                "range at frame {} to {} was skipped: {}",
-                request.sequence.frame_of(start, ticks_per_frame),
-                request.sequence.frame_of(end, ticks_per_frame),
-                reason
-            )),
+            Err((reason, detail)) => plan.skip(&request.sequence, start, end, reason, detail),
         }
     }
 
@@ -1063,10 +1107,17 @@ pub fn build_plan(
             };
 
             if ripple_enabled && driver.is_none() {
-                plan.warnings.push(format!(
-                    "no writable track covers frame {} to {}, range skipped",
+                let detail = format!(
+                    "no writable track covers frame {} to {}",
                     interval.start_frame, interval.end_frame
-                ));
+                );
+                plan.warnings.push(format!("{detail}, range skipped"));
+                plan.skipped.push(SkippedRange {
+                    start_frame: interval.start_frame,
+                    end_frame: interval.end_frame,
+                    reason: SkipReason::NoWritableTrack,
+                    detail,
+                });
                 plan.removed_ticks -= interval.end_ticks - interval.start_ticks;
                 continue;
             }
@@ -1118,8 +1169,13 @@ pub fn build_plan(
 
 /// Every clip the operation could touch must be in a supported state, and a
 /// ripple must not have to move content on a track we are not allowed to write.
-fn validate_range(request: &PlanRequest, start: i64, end: i64) -> Result<(), String> {
+///
+/// On a rendered timeline a ripple moves transitions together with their clips,
+/// so only a cut through a transition is unsafe. Known transition ranges decide
+/// exactly; without them the flags of the clips the cut overlaps decide.
+fn validate_range(request: &PlanRequest, start: i64, end: i64) -> Result<(), (SkipReason, String)> {
     let ripple = request.mode == PlanMode::DeleteRipple;
+    let rendered = request.analysis_source == AnalysisSource::RenderedMixdown;
     if !request.tracks.iter().any(|track| {
         !track.locked
             && track
@@ -1127,7 +1183,10 @@ fn validate_range(request: &PlanRequest, start: i64, end: i64) -> Result<(), Str
                 .iter()
                 .any(|clip| contains((clip.start_ticks, clip.end_ticks), start, end))
     }) {
-        return Err("no writable clip covers the range".to_string());
+        return Err((
+            SkipReason::NoWritableClip,
+            "no writable clip covers the range".to_string(),
+        ));
     }
     if ripple {
         for track in &request.tracks {
@@ -1136,9 +1195,12 @@ fn validate_range(request: &PlanRequest, start: i64, end: i64) -> Result<(), Str
             }
             let blocked = track.clips.iter().any(|clip| clip.end_ticks > start);
             if blocked {
-                return Err(format!(
-                    "locked track {} contains material that a ripple would have to move",
-                    track.id.label()
+                return Err((
+                    SkipReason::LockedTrack,
+                    format!(
+                        "locked track {} contains material that a ripple would have to move",
+                        track.id.label()
+                    ),
                 ));
             }
         }
@@ -1147,34 +1209,73 @@ fn validate_range(request: &PlanRequest, start: i64, end: i64) -> Result<(), Str
         if track.locked && request.respect_locks {
             continue;
         }
+        if rendered {
+            if let Some(spans) = &track.transition_spans {
+                if spans
+                    .iter()
+                    .any(|&(span_start, span_end)| span_start < end && span_end > start)
+                {
+                    return Err((
+                        SkipReason::Transition,
+                        format!(
+                            "a transition on track {} lies inside the range",
+                            track.id.label()
+                        ),
+                    ));
+                }
+                continue;
+            }
+        }
         for clip in &track.clips {
             let overlaps = overlap(clip.start_ticks, clip.end_ticks, start, end).is_some();
-            // A ripple delete also moves every later clip on every writable track.
-            let shifted = ripple && clip.end_ticks > start;
+            // A ripple delete also moves every later clip on every writable
+            // track. Raw source analysis has to reproduce their timing too.
+            let shifted = !rendered && ripple && clip.end_ticks > start;
             if !overlaps && !shifted {
                 continue;
             }
-            let timing_reason = if request.analysis_source == AnalysisSource::RenderedMixdown {
+            if rendered {
                 // Native rendering and native razor preserve source timing.
                 // Source offset arithmetic is never used for this path.
-                clip.transition_in
+                if let Some(reason) = clip
+                    .transition_in
                     .timing_reason("incoming transition")
                     .or_else(|| clip.transition_out.timing_reason("outgoing transition"))
-            } else {
-                clip.unsupported_reason()
-            };
-            if let Some(reason) = timing_reason {
-                return Err(format!(
-                    "clip {} on track {} has an unsupported state ({reason})",
-                    clip.id,
-                    track.id.label()
+                {
+                    return Err((
+                        SkipReason::Transition,
+                        format!(
+                            "clip {} on track {} has an unsupported state ({reason})",
+                            clip.id,
+                            track.id.label()
+                        ),
+                    ));
+                }
+                continue;
+            }
+            if let Some(reason) = clip.unsupported_reason() {
+                let code = if reason.contains("transition") {
+                    SkipReason::Transition
+                } else {
+                    SkipReason::UnsupportedClip
+                };
+                return Err((
+                    code,
+                    format!(
+                        "clip {} on track {} has an unsupported state ({reason})",
+                        clip.id,
+                        track.id.label()
+                    ),
                 ));
             }
             if let Some(reason) = clip.audio_state_reason(request.analysis_source) {
-                return Err(format!(
-                    "clip {} on track {} has an unreadable audible state ({reason})",
-                    clip.id,
-                    track.id.label()
+                return Err((
+                    SkipReason::UnsupportedClip,
+                    format!(
+                        "clip {} on track {} has an unreadable audible state ({reason})",
+                        clip.id,
+                        track.id.label()
+                    ),
                 ));
             }
         }
@@ -1182,9 +1283,9 @@ fn validate_range(request: &PlanRequest, start: i64, end: i64) -> Result<(), Str
     for id in &request.analysis_tracks {
         let found = request.tracks.iter().any(|track| track.id == *id);
         if !found {
-            return Err(format!(
-                "analysis track {} is not part of the snapshot",
-                id.label()
+            return Err((
+                SkipReason::UnsupportedClip,
+                format!("analysis track {} is not part of the snapshot", id.label()),
             ));
         }
     }
@@ -1279,6 +1380,26 @@ impl PlanRequest {
                     )?,
                 });
             }
+            let transition_spans = match track.transition_spans {
+                None => None,
+                Some(spans) => {
+                    let mut ranges = Vec::with_capacity(spans.len());
+                    for span in spans {
+                        if out_of_range(span.start_ticks)
+                            || out_of_range(span.end_ticks)
+                            || span.end_ticks <= span.start_ticks
+                        {
+                            return Err(format!(
+                                "track {}{} has an invalid transition range",
+                                track.kind, track.index
+                            ));
+                        }
+                        ranges.push((span.start_ticks, span.end_ticks));
+                    }
+                    ranges.sort_unstable();
+                    Some(ranges)
+                }
+            };
             tracks.push(TrackInfo {
                 id: TrackId {
                     kind,
@@ -1289,6 +1410,7 @@ impl PlanRequest {
                 muted: track.muted,
                 role,
                 clips,
+                transition_spans,
             });
         }
 
@@ -1408,5 +1530,27 @@ impl PlanRequest {
 impl Plan {
     pub fn to_json(&self) -> Result<String, String> {
         serde_json::to_string(self).map_err(|error| format!("cannot serialise plan: {error}"))
+    }
+
+    /// Records a range that is not cut, as a log line and as a coded entry.
+    fn skip(
+        &mut self,
+        sequence: &SequenceInfo,
+        start: i64,
+        end: i64,
+        reason: SkipReason,
+        detail: String,
+    ) {
+        let start_frame = sequence.frame_of(start, self.ticks_per_frame);
+        let end_frame = sequence.frame_of(end, self.ticks_per_frame);
+        self.warnings.push(format!(
+            "range at frame {start_frame} to {end_frame} was skipped: {detail}"
+        ));
+        self.skipped.push(SkippedRange {
+            start_frame,
+            end_frame,
+            reason,
+            detail,
+        });
     }
 }

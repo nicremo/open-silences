@@ -27,6 +27,7 @@ import {
   safetyFlagFromHost,
   subtractTicks,
   summarizePlan,
+  summarizeSkipped,
   ticksPerFrameFor,
   ticksToSeconds,
   timeRemapFlagFromComponents,
@@ -842,4 +843,40 @@ test('native partitions preserve speed-dependent source ranges and reject missin
   const wrong=structuredClone(split);wrong[0].items[1].projectItemId='other';
   assert.ok(verifyNativePartitions(original,wrong).length);
   assert.throws(()=>expectedAfterNativeCuts({tracks:original,intervals:[{startTicks:'20',endTicks:'40'}]}),/overlaps/);
+});
+
+test('transition ranges reach the engine exactly, an unreadable list stays null', () => {
+  const tracks = baseTracks();
+  tracks[0].transitionSpans = [{ startTicks: '10000000000000001', endTicks: 10160640000 * 30 }];
+  const snapshot = buildSnapshot({
+    sequence: baseSequence,
+    tracks,
+    analysisTracks: [{ kind: 'audio', index: 0 }],
+    parameters: { thresholdDb: -35, minPause: 0.3, minSpeech: 0.2, leadIn: 0.2, tail: 0.2 },
+    channelMode: 'loudest'
+  });
+  assert.deepEqual(snapshot.tracks[0].transitionSpans, [{ startTicks: '10000000000000001', endTicks: '304819200000' }]);
+  tracks[0].transitionSpans = null;
+  const unknown = buildSnapshot({
+    sequence: baseSequence, tracks, analysisTracks: [{ kind: 'audio', index: 0 }],
+    parameters: { thresholdDb: -35, minPause: 0.3, minSpeech: 0.2, leadIn: 0.2, tail: 0.2 }, channelMode: 'loudest'
+  });
+  assert.equal(unknown.tracks[0].transitionSpans, null);
+  delete tracks[0].transitionSpans;
+  const legacy = buildSnapshot({
+    sequence: baseSequence, tracks, analysisTracks: [{ kind: 'audio', index: 0 }],
+    parameters: { thresholdDb: -35, minPause: 0.3, minSpeech: 0.2, leadIn: 0.2, tail: 0.2 }, channelMode: 'loudest'
+  });
+  assert.equal('transitionSpans' in legacy.tracks[0], false);
+});
+
+test('skipped ranges are counted per reason, the most frequent first', () => {
+  const plan = { intervals: [], skipped: [
+    { reason: 'lockedTrack' }, { reason: 'transition' }, { reason: 'transition' }, { reason: 'somethingNew' }
+  ] };
+  assert.deepEqual(summarizeSkipped(plan), { count: 4, reasons: [
+    { reason: 'transition', count: 2 }, { reason: 'unsupportedClip', count: 1 }, { reason: 'lockedTrack', count: 1 }
+  ] });
+  assert.deepEqual(summarizeSkipped({ intervals: [] }), { count: 0, reasons: [] });
+  assert.equal(summarizePlan(plan).skipped.count, 4);
 });

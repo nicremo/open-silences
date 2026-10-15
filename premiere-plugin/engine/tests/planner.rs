@@ -1378,3 +1378,77 @@ fn dialogue_coverage_uses_enabled_clips_of_selected_tracks() {
     let request = PlanRequest::from_json(&fixture.snapshot.to_string()).unwrap();
     assert_eq!(dialogue_coverage(&request), vec![(0, 4 * SECOND)]);
 }
+
+/// Two dialogue clips meeting at 5 s, both flagged the way an old host flags
+/// every clip of a track that holds a transition somewhere.
+fn track_with_one_transition(spans: Option<serde_json::Value>) -> Fixture {
+    let flagged = |c: &mut serde_json::Value| {
+        c["transitionIn"] = json!(true);
+        c["transitionOut"] = json!(true);
+    };
+    let mut fixture = Fixture::new()
+        .analysis(&[("audio", 0)])
+        .track(
+            "audio",
+            0,
+            "dialogue",
+            false,
+            false,
+            vec![
+                clip_with("a", 0.0, 5.0, "raw.wav", flagged),
+                clip_with("b", 5.0, 10.0, "raw.wav", flagged),
+            ],
+        )
+        .source("native.wav", vec![(1.0, 2.0), (4.8, 5.2), (7.0, 8.0)]);
+    if let Some(spans) = spans {
+        fixture.snapshot["tracks"][0]["transitionSpans"] = spans;
+    }
+    rendered(&mut fixture);
+    fixture
+}
+
+/// A transition only blocks the ranges that cut through it. Clips that a ripple
+/// merely moves keep their transitions.
+#[test]
+fn a_transition_blocks_only_the_ranges_that_cut_through_it() {
+    let fixture = track_with_one_transition(Some(json!([
+        {"startTicks": ticks(4.9).to_string(), "endTicks": ticks(5.1).to_string()}
+    ])));
+    let plan = fixture.build().unwrap();
+    let starts: Vec<i64> = plan.intervals.iter().map(|i| i.start_ticks).collect();
+    assert_eq!(starts, vec![SECOND, 7 * SECOND], "{:?}", plan.warnings);
+    let skipped = serde_json::to_value(&plan.skipped).unwrap();
+    let skipped = skipped.as_array().unwrap();
+    assert!(!skipped.is_empty());
+    assert!(skipped.iter().all(|range| range["reason"] == "transition"));
+    assert_eq!(skipped.first().unwrap()["startFrame"], 120);
+    assert_eq!(skipped.last().unwrap()["endFrame"], 130);
+}
+
+/// Without transition ranges the clip flags decide, but only for the clips the
+/// cut overlaps, never for clips a ripple shifts.
+#[test]
+fn without_transition_ranges_only_overlapped_flagged_clips_block() {
+    let mut fixture = track_with_one_transition(None);
+    fixture.snapshot["tracks"][0]["clips"][0]["transitionIn"] = json!(false);
+    fixture.snapshot["tracks"][0]["clips"][0]["transitionOut"] = json!(false);
+    let plan = fixture.build().unwrap();
+    let starts: Vec<i64> = plan.intervals.iter().map(|i| i.start_ticks).collect();
+    assert_eq!(starts, vec![SECOND, ticks(4.8)], "{:?}", plan.warnings);
+    assert!(plan
+        .skipped
+        .iter()
+        .all(|range| serde_json::to_value(range).unwrap()["reason"] == "transition"));
+    assert_eq!(plan.skipped.len(), 2, "{:?}", plan.skipped);
+}
+
+#[test]
+fn invalid_transition_ranges_are_errors() {
+    let fixture = track_with_one_transition(Some(json!([
+        {"startTicks": ticks(5.1).to_string(), "endTicks": ticks(4.9).to_string()}
+    ])));
+    assert!(fixture
+        .build()
+        .unwrap_err()
+        .contains("invalid transition range"));
+}

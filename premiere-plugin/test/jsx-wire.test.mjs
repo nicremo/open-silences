@@ -490,3 +490,44 @@ test('shift moves skip items a linked partner already moved and stop on a failed
   assert.equal(failed.ok, false);
   assert.match(failed.error, /moved/);
 });
+
+/** Two clips meeting at 6 s on the active sequence, optional transition list. */
+function twoClipTimeline(sandbox, transitions) {
+  const track = project.activeSequence.videoTracks[0];
+  const first = makeClip('first', 0, 6 * TICKS, 0, 6 * TICKS, '/tmp/a.mov');
+  const second = makeClip('second', 6 * TICKS, 12 * TICKS, 0, 6 * TICKS, '/tmp/b.mov');
+  track.clips = { numItems: 2, 0: first, 1: second };
+  if (transitions === 'throws') {
+    Object.defineProperty(track, 'transitions', { get() { throw new Error('no reader'); } });
+  } else if (transitions) {
+    track.transitions = transitions;
+  }
+  return JSON.parse(vm.runInContext('OS_readSequence()', sandbox));
+}
+
+test('only the clips whose edge lies inside a transition are flagged', () => {
+  const sandbox = createHost();
+  const read = twoClipTimeline(sandbox, {
+    numItems: 1,
+    0: { start: { ticks: String(5.5 * TICKS) }, end: { ticks: String(6.5 * TICKS) } }
+  });
+  assert.equal(read.ok, true, read.error);
+  const track = read.tracks[0];
+  assert.deepEqual(track.transitionSpans, [{ startTicks: String(5.5 * TICKS), endTicks: String(6.5 * TICKS) }]);
+  assert.deepEqual(track.clips.map(clip => [clip.transitionIn, clip.transitionOut]), [[false, true], [true, false]]);
+  assert.equal(read.transitionsReadable, true);
+});
+
+test('a track without a transition list relies on a QE count of zero, never on a guess', () => {
+  const sandbox = createHost();
+  const proven = twoClipTimeline(sandbox, 'throws');
+  assert.deepEqual(proven.tracks[0].transitionSpans, []);
+  assert.deepEqual(proven.tracks[0].clips.map(clip => clip.transitionIn), [false, false]);
+
+  const unknown = createHost();
+  vm.runInContext('qe.project.getActiveSequence().getVideoTrackAt(0).numTransitions = 2;', unknown);
+  const read = twoClipTimeline(unknown, 'throws');
+  assert.equal(read.tracks[0].transitionSpans, null);
+  assert.deepEqual(read.tracks[0].clips.map(clip => clip.transitionIn), [null, null]);
+  assert.equal(read.transitionsReadable, false);
+});

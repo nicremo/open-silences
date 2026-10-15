@@ -730,11 +730,67 @@ function os_frameRate(sequence) {
 /* --------------------------------------------------------- reading the host */
 
 /**
- * Track flags and transition count.
+ * Transition ranges of a track in ticks, from the public `track.transitions`
+ * list. A transition sits on an edit point, so it only concerns the clips whose
+ * edge lies inside its range. An unreadable list stays unknown (null).
+ */
+function os_transitionSpans(track) {
+  var list = os_read(function () {
+    return track.transitions;
+  });
+  if (list.error || !list.value) {
+    return null;
+  }
+  var count = os_read(function () {
+    return list.value.numItems;
+  });
+  if (count.error || typeof count.value !== 'number' || count.value < 0 || Math.floor(count.value) !== count.value) {
+    return null;
+  }
+  var spans = [];
+  for (var index = 0; index < count.value; index++) {
+    var item = list.value[index];
+    if (!item) {
+      return null;
+    }
+    var start = os_read(function () {
+      return item.start.ticks;
+    });
+    var end = os_read(function () {
+      return item.end.ticks;
+    });
+    if (start.error || end.error || !/^[0-9]+$/.test(String(start.value)) || !/^[0-9]+$/.test(String(end.value))) {
+      return null;
+    }
+    if (os_compareTicks(String(end.value), String(start.value)) <= 0) {
+      return null;
+    }
+    spans.push({ startTicks: String(start.value), endTicks: String(end.value) });
+  }
+  return spans;
+}
+
+/** True when the edit at `ticks` lies inside one of the transition ranges. */
+function os_edgeInSpans(spans, ticks) {
+  for (var index = 0; index < spans.length; index++) {
+    if (
+      os_compareTicks(spans[index].startTicks, String(ticks)) <= 0 &&
+      os_compareTicks(String(ticks), spans[index].endTicks) <= 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Track flags, transition count and transition ranges.
  *
  * Transitions are counted with the QE reader (`numTransitions`). The public
  * clip list does NOT contain transitions, so a clip type never proves their
- * absence. An unreadable count stays unknown.
+ * absence. The ranges come from the public track list. A range list that
+ * contradicts a positive QE count stays unknown, a readable QE count of zero
+ * proves an empty list.
  */
 function os_trackState(sequence, qeSequence, kind, index) {
   var collection = kind === 'video' ? sequence.videoTracks : sequence.audioTracks;
@@ -781,7 +837,14 @@ function os_trackState(sequence, qeSequence, kind, index) {
       }
     }
   }
-  return { locked: locked, muted: muted, transitions: transitions };
+  var spans = os_transitionSpans(track);
+  if (spans !== null && transitions !== null && transitions > 0 && spans.length === 0) {
+    spans = null;
+  }
+  if (spans === null && transitions === 0) {
+    spans = [];
+  }
+  return { locked: locked, muted: muted, transitions: transitions, spans: spans };
 }
 
 /**
@@ -823,7 +886,7 @@ function os_timeRemap(clip) {
   return null;
 }
 
-function os_readClip(clip, trackKind, trackIndex, trackHasTransitions) {
+function os_readClip(clip, trackKind, trackIndex, transitionSpans) {
   var name = os_read(function () {
     return clip.name;
   });
@@ -895,8 +958,9 @@ function os_readClip(clip, trackKind, trackIndex, trackHasTransitions) {
     // Never false: this host has no remap reader.
     timeRemap: os_timeRemap(clip),
     nested: nested,
-    transitionIn: trackHasTransitions === null ? null : trackHasTransitions,
-    transitionOut: trackHasTransitions === null ? null : trackHasTransitions,
+    // Per clip: only an edge inside a transition range counts.
+    transitionIn: transitionSpans === null ? null : os_edgeInSpans(transitionSpans, start.value),
+    transitionOut: transitionSpans === null ? null : os_edgeInSpans(transitionSpans, end.value),
     mediaPath: mediaPath,
     projectItemId: projectItemId,
     disabled: disabled,
@@ -921,14 +985,7 @@ function os_readTracks(sequence, qeSequence) {
       var clips = [];
       var clipCount = track.clips.numItems;
       for (var clipIndex = 0; clipIndex < clipCount; clipIndex++) {
-        clips.push(
-          os_readClip(
-            track.clips[clipIndex],
-            kind,
-            index,
-            state.transitions === null ? null : state.transitions > 0
-          )
-        );
+        clips.push(os_readClip(track.clips[clipIndex], kind, index, state.spans));
       }
       tracks.push({
         kind: kind,
@@ -937,6 +994,7 @@ function os_readTracks(sequence, qeSequence) {
         locked: state.locked,
         muted: state.muted,
         transitions: state.transitions,
+        transitionSpans: state.spans,
         role: kind === 'audio' && index === 0 ? 'dialogue' : 'other',
         clips: clips
       });
@@ -1058,7 +1116,7 @@ function OS_readSequence() {
     var linkedReadable = true;
     var clipCount = 0;
     for (var trackIndex = 0; trackIndex < tracks.length; trackIndex++) {
-      if (tracks[trackIndex].transitions === null) {
+      if (tracks[trackIndex].transitionSpans === null) {
         transitionsReadable = false;
       }
       for (var clipIndex = 0; clipIndex < tracks[trackIndex].clips.length; clipIndex++) {

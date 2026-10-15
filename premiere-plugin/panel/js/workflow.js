@@ -141,17 +141,17 @@ export function createWorkflow({host, engine, ui, t = ENGLISH}) {
       const rangeSeconds = sections.reduce((sum, range) => sum + seconds((BigInt(range.endTicks) - BigInt(range.startTicks)).toString()), 0);
       const preview = summarizePlan(plan);
       if (previewOnly) {
-        return {ok:true, preview:{cutCount:preview.cutCount, removedSeconds:preview.removedSeconds, rangeSeconds}, plan};
+        return {ok:true, preview:{cutCount:preview.cutCount, removedSeconds:preview.removedSeconds, rangeSeconds, skipped:preview.skipped}, plan};
       }
       if (!plan.intervals.length) {
-        ui.complete({cutCount:0, removedSeconds:0, backupName:backup.backupName});
-        return {ok:true, backup, plan};
+        ui.complete({cutCount:0, removedSeconds:0, backupName:backup.backupName, skipped:preview.skipped});
+        return {ok:true, backup, plan, summary:preview};
       }
       // The user sees what will happen before anything is cut.
       checkCancelled();
-      const approved = await ui.confirm({cutCount:preview.cutCount, removedSeconds:preview.removedSeconds, rangeSeconds});
+      const approved = await ui.confirm({cutCount:preview.cutCount, removedSeconds:preview.removedSeconds, rangeSeconds, skipped:preview.skipped});
       if (!approved) {
-        ui.complete({cutCount:0, removedSeconds:0, backupName:backup.backupName, declined:true});
+        ui.complete({cutCount:0, removedSeconds:0, backupName:backup.backupName, declined:true, skipped:preview.skipped});
         return {ok:true, declined:true, backup, plan};
       }
       checkCancelled();

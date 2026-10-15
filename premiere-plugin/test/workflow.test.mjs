@@ -104,7 +104,7 @@ test('workflow messages follow the injected language and default to English',asy
 test('preview creates no backup, asks nothing and never cuts',async()=>{
  const h=harness({plan:cutPlan});await h.workflow.refresh();const result=await h.workflow.run(config,'preview');
  assert.equal(result.ok,true,result.error);
- assert.deepEqual(result.preview,{cutCount:1,removedSeconds:1,rangeSeconds:10});
+ assert.deepEqual(result.preview,{cutCount:1,removedSeconds:1,rangeSeconds:10,skipped:{count:0,reasons:[]}});
  assert.equal(h.calls.includes('prepareCut'),false);
  assert.equal(h.calls.includes('apply'),false);
  assert.equal(h.previews.length,0);
