@@ -112,7 +112,8 @@ export function createWorkflow({host, engine, ui, t = ENGLISH}) {
       checkCancelled();
       if (!estimateOnly && !previewOnly && safety.backup) {
         ui.busy(true, t('status.backup'), false, 'backup');
-        backup = (await take('prepareCut', {expectedIdentity:sequence.identity, expectedStateFingerprint:fresh.raw, expectedItemFingerprint:original.raw})).parsed;
+        // The state was read just now and is read again after the backup.
+        backup = (await take('prepareCut', {expectedIdentity:sequence.identity, expectedItemFingerprint:original.raw})).parsed;
         const backupRead = await take('readItemsOfSequence', {sequenceId:backup.backupId});
         if (backupRead.raw !== backup.backupItems || JSON.stringify(backupRead.parsed.tracks) !== JSON.stringify(original.parsed.tracks)) throw Error(t('error.backupUnverified'));
         ui.backup(backup.backupName);

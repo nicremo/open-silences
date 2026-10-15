@@ -1225,29 +1225,66 @@ function os_pluginBin(name) {
   return root.createBin(name);
 }
 
-/** Make and verify the protected backup before rendering or cutting. */
+/** The one sequence whose ID is not in `knownIds`, or null. */
+function os_newSequence(knownIds) {
+  var sequences = app.project.sequences;
+  var found = null;
+  for (var index = 0; index < sequences.numSequences; index++) {
+    var id = String(sequences[index].sequenceID);
+    var known = false;
+    for (var previous = 0; previous < knownIds.length; previous++) {
+      if (knownIds[previous] === id) {
+        known = true;
+        break;
+      }
+    }
+    if (!known) {
+      if (found) {
+        return null;
+      }
+      found = sequences[index];
+    }
+  }
+  return found;
+}
+
+/**
+ * Make and verify the protected backup before rendering or cutting. The copy
+ * is never opened: it is found by its new sequenceID, read once and compared
+ * with the item fingerprint the panel has just read. The state fingerprint is
+ * checked when the caller sends one.
+ */
 function OS_prepareCut(payloadJson) {
   var target = app.project.activeSequence;
   try {
     var payload = JSON.parse(payloadJson);
-    if (!target || os_identity(target) !== payload.expectedIdentity || OS_readSequence() !== payload.expectedStateFingerprint ||
+    if (!target || os_identity(target) !== payload.expectedIdentity ||
+        (payload.expectedStateFingerprint && OS_readSequence() !== payload.expectedStateFingerprint) ||
         os_itemEnvelope(target) !== payload.expectedItemFingerprint) return os_fail('The selection has changed. Please choose the range again.');
-    var cloned = JSON.parse(OS_cloneSequence(payload.expectedIdentity, payload.expectedItemFingerprint));
-    if (!cloned.ok) return os_fail(cloned.error);
-    var backup = app.project.activeSequence;
-    if (String(backup.sequenceID) === String(target.sequenceID) ||
-        os_json(os_readItemsOf(backup)) !== os_json(os_readItemsOf(target))) return os_fail('The backup does not match the sequence.');
+    var knownIds = os_sequenceIds();
+    var cloned = os_read(function () {
+      return target.clone();
+    });
+    if (cloned.error) return os_fail('The sequence could not be cloned: ' + cloned.error);
+    var backup = os_newSequence(knownIds);
+    if (!backup || String(backup.sequenceID) === String(target.sequenceID)) return os_fail('The new sequence copy could not be identified.');
     var stamp = new Date();
     backup.name = String(target.name) + ' - Backup ' + stamp.getFullYear() + '-' + (stamp.getMonth()+1) + '-' + stamp.getDate() + ' ' + stamp.getHours() + ':' + stamp.getMinutes() + ':' + stamp.getSeconds();
     var bin = os_pluginBin('Open Silences Backups');
     if (!bin) return os_fail('The backup bin could not be created.');
     backup.projectItem.moveBin(bin);
     var backupItems = os_itemEnvelope(backup);
+    if (os_json(JSON.parse(backupItems).tracks) !== os_json(JSON.parse(payload.expectedItemFingerprint).tracks)) {
+      return os_fail('The backup does not match the sequence.');
+    }
     if (os_itemEnvelope(target) !== payload.expectedItemFingerprint) return os_fail('The sequence changed during the backup.');
     return os_json({ok:true, backupId:String(backup.sequenceID), backupName:String(backup.name), backupItems:backupItems,
-      targetId:String(target.sequenceID), targetIdentity:os_identity(target), targetItems:os_itemEnvelope(target)});
+      targetId:String(target.sequenceID), targetIdentity:os_identity(target)});
   } catch (error) { return os_fail('Backup failed: ' + String(error)); }
-  finally { if (target) app.project.openSequence(target.sequenceID); }
+  finally {
+    var active = app.project.activeSequence;
+    if (target && (!active || String(active.sequenceID) !== String(target.sequenceID))) app.project.openSequence(target.sequenceID);
+  }
 }
 
 /**
@@ -1498,6 +1535,31 @@ function os_findExactItem(track, interval) {
   var startTicks = String(interval.startTicks);
   var endTicks = String(interval.endTicks);
   var clips = track.clips;
+  // Clips are kept in timeline order, so a binary search on the start needs a
+  // few reads instead of one per clip. Every clip read is a host call.
+  var low = 0;
+  var high = clips.numItems - 1;
+  while (low <= high) {
+    var middle = Math.floor((low + high) / 2);
+    var candidate = clips[middle];
+    var order = os_compareTicks(String(candidate.start.ticks), startTicks);
+    if (order === 0) {
+      if (String(candidate.end.ticks) === endTicks) {
+        return candidate;
+      }
+      break;
+    }
+    if (order < 0) {
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return os_scanExactItem(clips, startTicks, endTicks);
+}
+
+/** Linear lookup for a collection that is not in timeline order. */
+function os_scanExactItem(clips, startTicks, endTicks) {
   for (var index = 0; index < clips.numItems; index++) {
     var clip = clips[index];
     if (String(clip.start.ticks) === startTicks && String(clip.end.ticks) === endTicks) {
@@ -1816,16 +1878,176 @@ function os_syncRestorer(qeTrack) {
   };
 }
 
+/** Undo step for a track targeting this call changed. */
+function os_targetRestorer(track, targeted) {
+  return function () {
+    track.setTargeted(targeted, true);
+  };
+}
+
+/** In and out points that are not set read back as this tick value. */
+var OS_UNSET_POINT_TICKS = '-101606400000000000';
+
+/**
+ * The ranges a batch removes, latest first: touching pieces join into one
+ * range, so a cut across clip boundaries is removed in one step.
+ */
+function os_batchRanges(intervals) {
+  var pieces = intervals.slice(0);
+  pieces.sort(function (first, second) {
+    return os_compareTicks(String(first.startTicks), String(second.startTicks));
+  });
+  var ranges = [];
+  for (var index = 0; index < pieces.length; index++) {
+    var start = String(pieces[index].startTicks);
+    var end = String(pieces[index].endTicks);
+    var last = ranges.length ? ranges[ranges.length - 1] : null;
+    if (last && os_compareTicks(start, last.endTicks) <= 0) {
+      if (os_compareTicks(end, last.endTicks) > 0) {
+        last.endTicks = end;
+      }
+    } else {
+      ranges.push({ startTicks: start, endTicks: end });
+    }
+  }
+  ranges.reverse();
+  return ranges;
+}
+
+/** Sum of two non negative decimal tick strings, exact at any length. */
+function os_addTicks(first, second) {
+  var a = String(first);
+  var b = String(second);
+  var result = '';
+  var carry = 0;
+  for (var index = 0; index < Math.max(a.length, b.length) || carry; index++) {
+    var digit = carry;
+    if (index < a.length) {
+      digit += a.charCodeAt(a.length - 1 - index) - 48;
+    }
+    if (index < b.length) {
+      digit += b.charCodeAt(b.length - 1 - index) - 48;
+    }
+    result = String(digit % 10) + result;
+    carry = digit >= 10 ? 1 : 0;
+  }
+  return result.replace(/^0+(?=[0-9])/, '');
+}
+
+/**
+ * Difference of two non negative decimal tick strings, exact at any length.
+ * Null when the result would be negative.
+ */
+function os_subtractTicks(later, earlier) {
+  var a = String(later);
+  var b = String(earlier);
+  if (os_compareTicks(a, b) < 0) {
+    return null;
+  }
+  var result = '';
+  var borrow = 0;
+  for (var index = 0; index < a.length; index++) {
+    var digit = a.charCodeAt(a.length - 1 - index) - 48 - borrow;
+    if (index < b.length) {
+      digit -= b.charCodeAt(b.length - 1 - index) - 48;
+    }
+    borrow = digit < 0 ? 1 : 0;
+    result = String(digit + borrow * 10) + result;
+  }
+  return result.replace(/^0+(?=[0-9])/, '');
+}
+
+/**
+ * Removes every range with Premiere's own extract: in and out points mark the
+ * range and extract ripples all targeted tracks in one step. Every unlocked
+ * track is targeted for the batch. In and out points are checked before and
+ * the sequence length after every range, so an unexpected result stops the
+ * batch. In and out points the user had set come back, moved by the time
+ * removed before them.
+ */
+function os_extractRanges(active, qeSequence, ranges, restore) {
+  var inPoint = String(active.getInPointAsTime().ticks);
+  var outPoint = String(active.getOutPointAsTime().ticks);
+  var groups = [active.videoTracks, active.audioTracks];
+  for (var group = 0; group < groups.length; group++) {
+    for (var trackIndex = 0; trackIndex < groups[group].numTracks; trackIndex++) {
+      var track = groups[group][trackIndex];
+      if (track.isLocked()) {
+        continue;
+      }
+      var targeted = Boolean(track.isTargeted());
+      if (!targeted) {
+        track.setTargeted(true, true);
+        restore.push(os_targetRestorer(track, false));
+      }
+    }
+  }
+  var videoRate = active.getSettings().videoFrameRate;
+  var format = function (ticks) {
+    var time = new Time();
+    time.ticks = String(ticks);
+    return time.getFormatted(videoRate, active.videoDisplayFormat);
+  };
+  // Extract clears both points, so each one the user had set is put back.
+  var removedBeforeIn = '0';
+  var removedBeforeOut = '0';
+  var hasIn = inPoint !== OS_UNSET_POINT_TICKS && /^[0-9]+$/.test(inPoint);
+  var hasOut = outPoint !== OS_UNSET_POINT_TICKS && /^[0-9]+$/.test(outPoint);
+  if (hasIn) {
+    restore.push(function () {
+      qeSequence.setInPoint(format(os_subtractTicks(inPoint, removedBeforeIn)));
+    });
+  }
+  if (hasOut) {
+    restore.push(function () {
+      qeSequence.setOutPoint(format(os_subtractTicks(outPoint, removedBeforeOut)));
+    });
+  }
+  var applied = 0;
+  var end = String(active.end);
+  for (var index = 0; index < ranges.length; index++) {
+    var range = ranges[index];
+    var inCode = format(range.startTicks);
+    var outCode = format(range.endTicks);
+    if (!inCode || !outCode) {
+      return { ok: false, applied: applied, error: 'A cut point cannot be expressed in the display format.' };
+    }
+    qeSequence.setInOutPoints(inCode, outCode);
+    // The largest and the smallest frame numbers of the batch prove that the
+    // timecodes land exactly; the length check covers every range.
+    if ((index === 0 || index === ranges.length - 1) &&
+        (String(active.getInPointAsTime().ticks) !== range.startTicks || String(active.getOutPointAsTime().ticks) !== range.endTicks)) {
+      return { ok: false, applied: applied, error: 'In and out points did not land on the cut.' };
+    }
+    qeSequence.extract();
+    var length = os_subtractTicks(range.endTicks, range.startTicks);
+    var shorter = String(active.end);
+    if (os_subtractTicks(end, shorter) !== length) {
+      return { ok: false, applied: applied, error: 'The sequence did not shrink by the cut length.' };
+    }
+    end = shorter;
+    if (hasIn && os_compareTicks(range.endTicks, inPoint) <= 0) {
+      removedBeforeIn = os_addTicks(removedBeforeIn, length);
+    }
+    if (hasOut && os_compareTicks(range.endTicks, outPoint) <= 0) {
+      removedBeforeOut = os_addTicks(removedBeforeOut, length);
+    }
+    applied++;
+  }
+  return { ok: true, applied: applied };
+}
+
 /**
  * OS_applyBatch: cuts one batch of a plan on the active sequence, from the end
  * of the timeline towards the start, so every earlier position stays valid for
  * the next batch.
  *
  * While the batch runs the sequence shows frame numbers, so every cut point is
- * a plain frame count and no drop frame timecode is parsed. Every unlocked
- * track is sync locked, so the one ripple per piece moves all tracks together.
- * Display format and sync locks are restored before the call returns, also
- * after a failure.
+ * a plain frame count and no drop frame timecode is parsed. Each range is
+ * removed with Premiere's extract when the host offers it. Otherwise every
+ * unlocked track is sync locked, each piece is razored and the one ripple per
+ * piece moves all tracks together. Display format, targeting and sync locks
+ * are restored before the call returns, also after a failure.
  */
 function OS_applyBatch(payloadJson) {
   var active = app.project.activeSequence;
@@ -1862,6 +2084,15 @@ function OS_applyBatch(payloadJson) {
         os_setDisplayFormat(active, originalFormat);
       });
       framesShown = os_setDisplayFormat(active, OS_DISPLAY_FRAMES);
+    }
+
+    if (typeof qeSequence.extract === 'function' && typeof qeSequence.setInOutPoints === 'function') {
+      var extracted = os_extractRanges(active, qeSequence, os_batchRanges(payload.intervals), restore);
+      applied = extracted.applied;
+      if (!extracted.ok) {
+        return os_fail(extracted.error + ' Stopped after ' + applied + ' cuts.');
+      }
+      return os_json({ ok: true, applied: applied, framesShown: framesShown, method: 'extract' });
     }
 
     var kinds = ['video', 'audio'];
@@ -1991,16 +2222,30 @@ function os_setPresetParam(text, identifier, value) {
   if (!text) {
     return null;
   }
-  var block = '(?:(?!</ExporterParam>)[\\s\\S])*?';
-  var after = new RegExp('(<ParamIdentifier>' + identifier + '</ParamIdentifier>' + block + '<ParamValue>)[^<]*(</ParamValue>)');
-  if (after.test(text)) {
-    return text.replace(after, '$1' + value + '$2');
+  // Plain string search: a regular expression with lookahead takes seconds in
+  // ExtendScript on a preset of a few kilobytes.
+  var at = text.indexOf('<ParamIdentifier>' + identifier + '</ParamIdentifier>');
+  if (at < 0) {
+    return null;
   }
-  var before = new RegExp('(<ParamValue>)[^<]*(</ParamValue>' + block + '<ParamIdentifier>' + identifier + '</ParamIdentifier>)');
-  if (before.test(text)) {
-    return text.replace(before, '$1' + value + '$2');
+  var blockStart = Math.max(text.lastIndexOf('<ExporterParam ', at), text.lastIndexOf('<ExporterParam>', at));
+  var blockEnd = text.indexOf('</ExporterParam>', at);
+  if (blockStart < 0 || blockEnd < 0) {
+    return null;
   }
-  return null;
+  var open = text.indexOf('<ParamValue>', at);
+  if (open < 0 || open > blockEnd) {
+    open = text.indexOf('<ParamValue>', blockStart);
+  }
+  if (open < 0 || open > blockEnd) {
+    return null;
+  }
+  var valueStart = open + '<ParamValue>'.length;
+  var close = text.indexOf('</ParamValue>', valueStart);
+  if (close < 0 || close > blockEnd) {
+    return null;
+  }
+  return text.substring(0, valueStart) + value + text.substring(close);
 }
 
 /**

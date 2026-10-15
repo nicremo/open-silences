@@ -346,6 +346,34 @@ test('changed host state stops the cut before any razor even when positions matc
  assert.deepEqual(mutations.razors,[]);assert.deepEqual(mutations.removes,[]);
 });
 
+test('the backup is cloned, named, filed and verified without opening the copy', () => {
+  const sandbox = createHost();
+  project.rootItem = { children: { numItems: 0 }, createBin: name => ({ name, type: 2 }) };
+  const original = project.activeSequence;
+  const clone = original.clone;
+  let moved = null;
+  original.clone = () => {
+    const copy = clone();
+    copy.projectItem = { moveBin: bin => { moved = bin; } };
+    return copy;
+  };
+  const opened = [];
+  const open = project.openSequence;
+  project.openSequence = id => { opened.push(id); return open(id); };
+  const envelope = vm.runInContext('OS_readItems()', sandbox);
+  const reply = evalHost(sandbox, hostScriptFor('prepareCut', { expectedIdentity: 'doc:original', expectedItemFingerprint: envelope }));
+  assert.equal(reply.ok, true, reply.error);
+  assert.equal(reply.backupId, 'copy');
+  assert.match(reply.backupName, /^original - Backup /);
+  assert.equal(moved.name, 'Open Silences Backups');
+  assert.deepEqual(opened, []);
+  assert.equal(project.activeSequence.sequenceID, 'original');
+  assert.deepEqual(JSON.parse(reply.backupItems).tracks, JSON.parse(envelope).tracks);
+  const stale = evalHost(sandbox, hostScriptFor('prepareCut', { expectedIdentity: 'doc:original', expectedItemFingerprint: envelope, expectedStateFingerprint: 'stale' }));
+  assert.equal(stale.ok, false);
+  assert.match(stale.error, /selection has changed/);
+});
+
 test('protected readback does not steal the active edited timeline', () => {
  const sandbox=createHost();const envelope=evalHost(sandbox,'OS_readItems()');
  const copy=evalHost(sandbox,hostScriptFor('clone',{expectedIdentity:envelope.identity,expectedItemFingerprint:JSON.stringify(envelope)}));
@@ -610,6 +638,121 @@ test('a batch leaves a sync lock the user had alone and restores after a failure
   assert.equal(failing.qeTrack.synced, false);
 });
 
+/** A host whose QE sequence extracts: one video and one audio track at 25 fps. */
+function extractHost({ inSeconds = null, outSeconds = null, shrink = true, lockedAudio = false } = {}) {
+  const frame = TICKS / 25;
+  const unset = '-101606400000000000';
+  const log = [];
+  const track = (name, locked) => ({
+    ...makeTrack([]), name, targeted: false, isLocked: () => locked,
+    isTargeted() { return this.targeted; },
+    setTargeted(value) { this.targeted = value; log.push(['target', name, value]); }
+  });
+  const video = track('V1', false);
+  const audio = track('A1', lockedAudio);
+  const points = {
+    in: inSeconds === null ? unset : String(inSeconds * TICKS),
+    out: outSeconds === null ? unset : String(outSeconds * TICKS)
+  };
+  const sequence = {
+    sequenceID: 'seq', name: 'seq', videoDisplayFormat: 106, end: String(12 * TICKS),
+    getSettings: () => ({ videoFrameRate: { seconds: 1 / 25 } }),
+    getInPointAsTime: () => ({ ticks: points.in }),
+    getOutPointAsTime: () => ({ ticks: points.out }),
+    videoTracks: { numTracks: 1, 0: video },
+    audioTracks: { numTracks: 1, 0: audio }
+  };
+  const fromCode = code => String(Number(code) * frame);
+  const qeSequence = {
+    setInOutPoints(inCode, outCode) {
+      points.in = fromCode(inCode); points.out = fromCode(outCode);
+      log.push(['inout', inCode, outCode, sequence.videoDisplayFormat]);
+    },
+    setInPoint(code) { points.in = fromCode(code); log.push(['in', code]); },
+    setOutPoint(code) { points.out = fromCode(code); log.push(['out', code]); },
+    extract() {
+      log.push(['extract', video.targeted, audio.targeted]);
+      if (shrink) sequence.end = String(Number(sequence.end) - (Number(points.out) - Number(points.in)));
+      points.in = unset; points.out = unset;
+    }
+  };
+  const app = { project: { documentID: 'doc', activeSequence: sequence }, enableQE: () => {} };
+  const qe = { project: { getActiveSequence: () => qeSequence } };
+  function Time() { this.ticks = '0'; }
+  Time.prototype.getFormatted = function (rate, format) {
+    return format === 109 ? String(Number(this.ticks) / frame) : '00:00:00:00';
+  };
+  const sandbox = vm.createContext({ app, qe, Time });
+  vm.runInContext(source, sandbox, { filename: 'silences.jsx' });
+  return { sandbox, log, sequence, video, audio, points };
+}
+
+/** Two cuts; the first spans a clip boundary as two touching pieces. */
+const extractPayload = () => JSON.stringify({
+  expectedIdentity: 'doc:seq',
+  intervals: [
+    { startTicks: String(4 * TICKS), endTicks: String(5 * TICKS), cut: 0 },
+    { startTicks: String(5 * TICKS), endTicks: String(6 * TICKS), cut: 0 },
+    { startTicks: String(8 * TICKS), endTicks: String(9 * TICKS), cut: 1 }
+  ],
+  removals: []
+});
+
+test('a batch extracts every range latest first and restores display format and targeting', () => {
+  const { sandbox, log, sequence, video, audio } = extractHost();
+  const reply = JSON.parse(vm.runInContext(`OS_applyBatch(${JSON.stringify(extractPayload())})`, sandbox));
+  assert.equal(reply.ok, true, reply.error);
+  assert.deepEqual({ applied: reply.applied, method: reply.method }, { applied: 2, method: 'extract' });
+  assert.deepEqual(log, [
+    ['target', 'V1', true], ['target', 'A1', true],
+    ['inout', '200', '225', 109], ['extract', true, true],
+    ['inout', '100', '150', 109], ['extract', true, true],
+    ['target', 'A1', false], ['target', 'V1', false]
+  ]);
+  assert.equal(sequence.end, String(9 * TICKS));
+  assert.equal(sequence.videoDisplayFormat, 106);
+  assert.equal(video.targeted, false);
+  assert.equal(audio.targeted, false);
+});
+
+test('in and out points the user had set come back, moved by the removed time', () => {
+  const { sandbox, log, points } = extractHost({ inSeconds: 2, outSeconds: 11 });
+  const reply = JSON.parse(vm.runInContext(`OS_applyBatch(${JSON.stringify(extractPayload())})`, sandbox));
+  assert.equal(reply.ok, true, reply.error);
+  assert.deepEqual(log.filter(entry => entry[0] === 'in' || entry[0] === 'out'), [['out', '200'], ['in', '50']]);
+  assert.equal(points.in, String(2 * TICKS));
+  assert.equal(points.out, String(8 * TICKS));
+});
+
+test('an extract that does not shorten the sequence stops the batch and restores the state', () => {
+  const { sandbox, sequence, video } = extractHost({ shrink: false });
+  const reply = JSON.parse(vm.runInContext(`OS_applyBatch(${JSON.stringify(extractPayload())})`, sandbox));
+  assert.equal(reply.ok, false);
+  assert.match(reply.error, /did not shrink by the cut length\. Stopped after 0 cuts/);
+  assert.equal(sequence.videoDisplayFormat, 106);
+  assert.equal(video.targeted, false);
+});
+
+test('a locked track keeps its targeting during an extract batch', () => {
+  const { sandbox, log } = extractHost({ lockedAudio: true });
+  assert.equal(JSON.parse(vm.runInContext(`OS_applyBatch(${JSON.stringify(extractPayload())})`, sandbox)).ok, true);
+  assert.equal(log.some(entry => entry[0] === 'target' && entry[1] === 'A1'), false);
+  assert.deepEqual(log.find(entry => entry[0] === 'extract'), ['extract', true, false]);
+});
+
+test('tick arithmetic stays exact beyond double precision and touching pieces join', () => {
+  const sandbox = vm.createContext({});
+  vm.runInContext(source, sandbox, { filename: 'silences.jsx' });
+  assert.equal(sandbox.os_addTicks('9007199254740993', '7'), '9007199254741000');
+  assert.equal(sandbox.os_subtractTicks('10000000000000000000', '1'), '9999999999999999999');
+  assert.equal(sandbox.os_subtractTicks('5', '5'), '0');
+  assert.equal(sandbox.os_subtractTicks('4', '5'), null);
+  const ranges = sandbox.os_batchRanges([
+    { startTicks: '30', endTicks: '40' }, { startTicks: '10', endTicks: '20' }, { startTicks: '20', endTicks: '25' }
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(ranges)), [{ startTicks: '30', endTicks: '40' }, { startTicks: '10', endTicks: '25' }]);
+});
+
 test('a batch for another sequence or with a stale fingerprint touches nothing', () => {
   const other = batchHost();
   const wrong = JSON.parse(vm.runInContext(`OS_applyBatch(${JSON.stringify(batchPayload({ expectedIdentity: 'doc:other' }))})`, other.sandbox));
@@ -711,4 +854,20 @@ test('preset parameters are found in either order inside their block', () => {
   assert.equal(sandbox.os_setPresetParam(swapped, 'ADBEAudioNumChannels', '1'),
     '<ExporterParam><ParamValue>1</ParamValue><ParamIdentifier>ADBEAudioNumChannels</ParamIdentifier></ExporterParam>');
   assert.equal(sandbox.os_setPresetParam(PRESET_XML, 'ADBEMissing', '1'), null);
+});
+
+test('an exact clip is found in order with few reads, and out of order by a full pass', () => {
+  const sandbox = vm.createContext({});
+  vm.runInContext(source, sandbox, { filename: 'silences.jsx' });
+  let reads = 0;
+  const counted = (start, end) => ({
+    get start() { reads++; return { ticks: String(start) }; },
+    end: { ticks: String(end) }
+  });
+  const ordered = makeTrack(Array.from({ length: 256 }, (_, i) => counted(i * 10, i * 10 + 10)));
+  assert.equal(sandbox.os_findExactItem(ordered, { startTicks: '2000', endTicks: '2010' }).end.ticks, '2010');
+  assert.ok(reads <= 9, `the lookup read ${reads} clip starts`);
+  assert.equal(sandbox.os_findExactItem(ordered, { startTicks: '2000', endTicks: '2005' }), null);
+  const shuffled = makeTrack([counted(30, 40), counted(10, 20), counted(0, 10)]);
+  assert.equal(sandbox.os_findExactItem(shuffled, { startTicks: '0', endTicks: '10' }).end.ticks, '10');
 });

@@ -12,6 +12,8 @@
 - The analysis render is mono with 32 bit float samples at the sequence rate, without a copy of the sequence; the other audio tracks are muted only during the export. Levels are measured at 16 kHz on every n-th sample, so no resampling filter softens them. The engine reads PCM16, PCM24 and float32 WAV natively.
 - A transition only stops the pause it lies in, and the panel, the preview and the CLI name the reason when a range stays uncut.
 - Pacing presets set all four timing values to the same value.
+- Each cut is one extract between in and out points instead of razors and removals per clip piece; in and out points the user had set are restored.
+- The backup no longer opens the copy and reads the sequence three times instead of nine; the analysis preset is rewritten by plain string search instead of a slow regular expression.
 
 ## 0.2.0-alpha.2
 

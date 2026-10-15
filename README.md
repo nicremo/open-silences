@@ -49,7 +49,7 @@ Removing pauses from a talking head video should take one click, not an afternoo
 - **Precise edges.** Every cut edge is placed between the 20 ms level values where speech fades, then rounded inwards to whole frames, so a cut never reaches into speech.
 - **Whole selection or speech clips only.** By default every track is cut at each pause inside the range, gaps between clips included. "Under speech clips only" cuts just where a clip lies on a chosen speech track.
 - **An automatic threshold.** "Estimate level automatically" splits the levels into room tone and speech and suggests the top of the room tone.
-- **Fast cutting.** Cuts run in batches of 50 from the end of the timeline with one ripple per clip piece, while the timeline shows frame numbers. That is why every frame rate works.
+- **Fast cutting.** Cuts run in batches of 50 from the end of the timeline. Each cut is one extract between in and out points, while the timeline shows frame numbers. That is why every frame rate works.
 - **Verified result.** After the cut every clip position and media reference is read back and compared with the plan. This check can be switched off too.
 
 Open Silences is an independent project. It is not affiliated with or endorsed by Adobe.
