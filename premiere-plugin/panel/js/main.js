@@ -1,5 +1,5 @@
 import {interpretHostReply, hostScriptFor} from './core.js';
-import {createWorkflow, DEFAULT_SETTINGS, PRESETS, TIMING_FIELDS, resolveSections, seconds} from './workflow.js';
+import {createWorkflow, DEFAULT_SETTINGS, DEFAULT_SAFETY, PRESETS, TIMING_FIELDS, resolveSections, seconds} from './workflow.js';
 import {LANGUAGES, createTranslator, createFormat, resolveLanguage} from './i18n.js';
 const csInterface = new CSInterface();
 const ENGINE_RELATIVE_PATH = 'engine/silences-engine';
@@ -285,7 +285,9 @@ function renderResult() {
   const cut = summary.cutCount > 0 && !summary.declined;
   const blocked = !cut && !summary.declined && summary.skipped?.count > 0;
   $('resultValue').textContent = summary.declined ? t('result.declined') : cut ? t('result.removed', {seconds:fmt.seconds(summary.removedSeconds)}) : blocked ? t('result.blocked') : t('result.none');
-  const detail = cut ? t.plural('result.cuts', summary.cutCount, {name:summary.backupName}) : t('result.backup', {name:summary.backupName});
+  const detail = summary.backupName
+    ? (cut ? t.plural('result.cuts', summary.cutCount, {name:summary.backupName}) : t('result.backup', {name:summary.backupName}))
+    : (cut ? t.plural('result.cutsNoBackup', summary.cutCount) : t('result.noBackup'));
   $('resultDetail').textContent = [skippedText(summary.skipped), detail].filter(Boolean).join(' ');
 }
 function showResult(summary) {
@@ -302,7 +304,19 @@ function storedCutScope() {
   try { const value=localStorage.getItem(CUT_SCOPE_KEY); return value==='dialogue' ? 'dialogue' : 'selection'; } catch (_) { return 'selection'; }
 }
 for (const input of document.querySelectorAll('input[name="cutScope"]')) input.checked=input.value===storedCutScope();
+const SAFETY_KEY = 'open-silences-safety';
+const SAFETY_INPUTS = Object.freeze({backup:'safeBackup', verifyMix:'safeVerifyMix', readback:'safeReadback'});
+function storedSafety() {
+  try {
+    const value=JSON.parse(localStorage.getItem(SAFETY_KEY));
+    return {...DEFAULT_SAFETY, ...(value && typeof value==='object' ? value : {})};
+  } catch (_) { return {...DEFAULT_SAFETY}; }
+}
+{ const stored=storedSafety(); for (const [key,id] of Object.entries(SAFETY_INPUTS)) $(id).checked=Boolean(stored[key]); }
+function safetyConfig() { return Object.fromEntries(Object.entries(SAFETY_INPUTS).map(([key,id])=>[key,$(id).checked])); }
+function renderSafetyNote() { $('safety').textContent=t(safetyConfig().backup ? 'safety' : 'safety.none'); }
 function config() { return {
+  safety:safetyConfig(),
   scope:document.querySelector('input[name="scope"]:checked').value,
   cutScope:document.querySelector('input[name="cutScope"]:checked')?.value || 'selection',
   analysisTracks:[...document.querySelectorAll('#tracks input:checked')].map(el=>({kind:'audio',index:Number(el.value)})),
@@ -394,7 +408,7 @@ function applyLanguage(code) {
   $('language').value=t.language;
   $('primary').textContent=primaryText();
   if (sequenceRead) { renderSequence(); renderTracks(); } else $('sequenceName').textContent=t('sequence.reading');
-  renderScopeSummary(); renderConfirm(); renderResult(); renderBackup();
+  renderScopeSummary(); renderConfirm(); renderResult(); renderBackup(); renderSafetyNote();
   if (lastPhase) showProgress(lastPhase);
   if (typeof lastStatus.message==='function') status(lastStatus.message, lastStatus.kind);
 }
@@ -453,6 +467,8 @@ function markScope() { markChoices('#scope'); }
 $('scope').addEventListener('change',markScope); markScope();
 $('cutScope').addEventListener('change',()=>{ markChoices('#cutScope'); try { localStorage.setItem(CUT_SCOPE_KEY, config().cutScope); } catch (_) {} });
 markChoices('#cutScope');
+$('safetyOptions').addEventListener('change',()=>{ markChoices('#safetyOptions'); try { localStorage.setItem(SAFETY_KEY, JSON.stringify(safetyConfig())); } catch (_) {} renderSafetyNote(); });
+markChoices('#safetyOptions');
 
 const initialLanguage=storedLanguage();
 applyLanguage(initialLanguage || resolveLanguage(hostLocale()));

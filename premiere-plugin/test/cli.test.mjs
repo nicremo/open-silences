@@ -48,7 +48,8 @@ test('defaults are entire timeline, A1, -46 dB and the Standard pacing',()=>{
   const parsed = parseCliArgs(['preview']);
   assert.equal(parsed.command, 'preview');
   assert.deepEqual(parsed.config, {scope:'entire', analysisTracks:[{kind:'audio', index:0}], cutScope:'selection',
-    settings:{threshold:-46, minPause:160, minSpeech:160, leadIn:160, tail:160, minCutSpacing:0}});
+    settings:{threshold:-46, minPause:160, minSpeech:160, leadIn:160, tail:160, minCutSpacing:0},
+    safety:{backup:true, verifyMix:false, readback:true}});
   assert.equal(parsed.autoThreshold, false);
   assert.equal(parsed.yes, false);
   assert.equal(CLI_DEFAULTS.threshold, -46);
@@ -130,13 +131,20 @@ test('threshold auto estimates first and uses the estimate',async()=>{
   assert.equal(out.json().settings.threshold, -48.5);
   assert.equal(out.json().noiseFloorEstimated, true);
 });
-test('cut --yes runs the full protected workflow up to apply',async()=>{
+test('cut --yes runs the full protected workflow up to the first batch',async()=>{
   const fake = fakeHost();
-  // The fake host has no apply reply, so the run stops right at apply: proof that it got there.
+  // The fake host has no batch reply, so the run stops right at the first batch: proof that it got there.
   const out = await runCli(['cut','--yes','--json'], fake);
   assert.equal(out.code, EXIT.failed);
-  assert.deepEqual(fake.calls.filter(c => ['prepareCut','renderAudio','apply'].includes(c)), ['prepareCut','renderAudio','renderAudio','apply']);
+  assert.deepEqual(fake.calls.filter(c => ['prepareCut','renderAudio','applyBatch'].includes(c)), ['prepareCut','renderAudio','applyBatch']);
   assert.equal(out.json().backupName, 'Rohschnitt BACKUP');
+});
+test('the safety steps can be switched off and on',async()=>{
+  const fake = fakeHost();
+  const out = await runCli(['cut','--yes','--json','--no-backup','--verify-mix'], fake);
+  assert.equal(out.code, EXIT.failed);
+  assert.deepEqual(fake.calls.filter(c => ['prepareCut','renderAudio','applyBatch'].includes(c)), ['renderAudio','renderAudio','applyBatch']);
+  assert.equal(out.json().backupName, undefined);
 });
 test('cut with no silences succeeds without apply',async()=>{
   const fake = fakeHost({noSilence:true});

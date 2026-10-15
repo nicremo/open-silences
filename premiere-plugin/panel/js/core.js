@@ -23,14 +23,12 @@ export const TICKS_PER_SECOND_NUMBER = 254016000000;
 /** Safety state of an unreadable or unverifiable host property. */
 export const UNKNOWN = null;
 
-/** Premiere frame rates that need drop frame timecode, which is not supported. */
-const DROP_FRAME_FPS = [29.97, 30000 / 1001, 59.94, 60000 / 1001];
-
 /**
- * Frame rates actually observed on the host. Only 25 fps was measured on
- * Premiere Pro 26.5.2, every other rate stays unproven and blocks a cut.
+ * Premiere frame rates that need drop frame timecode. The QE timecode builder
+ * below refuses them; the native cut path shows frame numbers instead and cuts
+ * every rate.
  */
-export const OBSERVED_FRAME_RATES = [25];
+const DROP_FRAME_FPS = [29.97, 30000 / 1001, 59.94, 60000 / 1001];
 
 /* ------------------------------------------------------------ tick algebra */
 
@@ -378,11 +376,9 @@ export function assessCapabilities(sequence) {
     blockers.push('QE access for cutting is not confirmed.');
   }
   if (sequence.fpsSupported === true) {
-    readable.push(`Bildrate ${sequence.fps ?? sequence.fpsNumerator / sequence.fpsDenominator}`);
-  } else if (sequence.fpsObserved === false) {
-    blockers.push('Only 25 frames per second is proven on this host. This rate is not.');
+    readable.push(`Frame rate ${sequence.fps ?? sequence.fpsNumerator / sequence.fpsDenominator}`);
   } else {
-    blockers.push('This frame rate is not proven (drop frame or an unusual rate).');
+    blockers.push('The sequence frame rate is not readable.');
   }
   if (sequence.sourceTicksReadable === true) {
     readable.push('Source range in ticks');
@@ -670,7 +666,7 @@ export function expectedAfterNativeCuts({ tracks, intervals }) {
   })}));
 }
 
-export function verifyReadback({ expected, actual }) {
+export function verifyReadback({ expected, actual, checkSource = () => true }) {
   const problems = [];
   if (!Array.isArray(expected) || !Array.isArray(actual)) {
     return ['Readback without expected or actual data.'];
@@ -708,10 +704,10 @@ export function verifyReadback({ expected, actual }) {
       if (compareTicks(expectedItem.endTicks, actualItem.endTicks) !== 0) {
         problems.push(`${where}: end position differs.`);
       }
-      if (compareTicks(expectedItem.sourceInTicks, actualItem.sourceInTicks) !== 0) {
+      if (checkSource(expectedItem) && compareTicks(expectedItem.sourceInTicks, actualItem.sourceInTicks) !== 0) {
         problems.push(`${where}: source start differs.`);
       }
-      if (compareTicks(expectedItem.sourceOutTicks, actualItem.sourceOutTicks) !== 0) {
+      if (checkSource(expectedItem) && compareTicks(expectedItem.sourceOutTicks, actualItem.sourceOutTicks) !== 0) {
         problems.push(`${where}: source end differs.`);
       }
       if ((expectedItem.mediaPath ?? null) !== actualItem.mediaPath) {
@@ -729,6 +725,53 @@ export function verifyReadback({ expected, actual }) {
     }
   }
   return problems;
+}
+
+/** Cuts per host call when a plan is applied in batches. */
+export const CUTS_PER_BATCH = 50;
+
+/**
+ * Splits a plan into host calls of at most `size` cuts, from the end of the
+ * timeline towards the start. A ripple only moves material after the cut, so
+ * the positions of every later batch stay valid. Every batch carries all
+ * pieces of its cuts and the removals of those pieces.
+ */
+export function planBatches(plan, size = CUTS_PER_BATCH) {
+  const keyOf = range => `${normalizeTicks(range.startTicks)}-${normalizeTicks(range.endTicks)}`;
+  const cuts = new Map();
+  for (const interval of plan.intervals || []) {
+    const cut = interval.cut ?? keyOf(interval);
+    if (!cuts.has(cut)) cuts.set(cut, []);
+    cuts.get(cut).push(interval);
+  }
+  const ordered = [...cuts.values()].sort((a, b) => compareTicks(b[0].startTicks, a[0].startTicks));
+  const removals = new Map();
+  for (const removal of plan.removals || []) {
+    const key = keyOf(removal);
+    if (!removals.has(key)) removals.set(key, []);
+    removals.get(key).push(removal);
+  }
+  const batches = [];
+  for (let index = 0; index < ordered.length; index += size) {
+    const group = ordered.slice(index, index + size);
+    const intervals = group.flat();
+    batches.push({
+      cutCount: group.length,
+      intervals,
+      removals: intervals.flatMap(interval => removals.get(keyOf(interval)) || [])
+    });
+  }
+  return batches;
+}
+
+/**
+ * Readback check after a batched cut: every surviving piece of the timeline
+ * readback taken before the cut must sit at its rippled position with its media.
+ * Source ranges are only predicted for clips at normal speed.
+ */
+export function verifyCutReadback({ before, intervals, after }) {
+  const expected = expectedKeptItems({ tracks: before, intervals });
+  return verifyReadback({ expected, actual: after, checkSource: item => item.speed === 1 });
 }
 
 /** Provenance comparison of a full readback, used for the original sequence. */
@@ -868,6 +911,9 @@ export function hostScriptFor(name, payload) {
   }
   if (name === 'apply') {
     return `OS_applyPlan(${JSON.stringify(JSON.stringify(payload))})`;
+  }
+  if (name === 'applyBatch') {
+    return `OS_applyBatch(${JSON.stringify(JSON.stringify(payload))})`;
   }
   if (name === 'renderAudio') {
     return `OS_renderAudio(${JSON.stringify(JSON.stringify(payload))})`;

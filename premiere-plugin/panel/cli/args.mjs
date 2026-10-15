@@ -32,6 +32,9 @@ Options (defaults: entire timeline, A1, -46 dB, Standard pacing):
   --min-pause <ms> --min-speech <ms> --lead-in <ms> --tail <ms>   Override one timing
   --min-cut-spacing <ms>          Thin out cuts at most this far apart (default 0, off)
   --cut-scope selection|dialogue  Cut every track in the range, or only under speech clips (default selection)
+  --no-backup                     Cut without a backup sequence
+  --verify-mix                    Render the mix a second time right before the cut
+  --no-readback                   Skip the check of every clip after the cut
   --yes                           Confirm the cut
   --json                          One JSON object on stdout
   --timeout <s>                   Per host call (default 1800)
@@ -57,6 +60,7 @@ export function parseCliArgs(argv) {
       scope:{type:'string'}, tracks:{type:'string'}, threshold:{type:'string'}, preset:{type:'string'},
       'min-pause':{type:'string'}, 'min-speech':{type:'string'}, 'lead-in':{type:'string'}, tail:{type:'string'},
       'min-cut-spacing':{type:'string'}, 'cut-scope':{type:'string'},
+      'no-backup':{type:'boolean'}, 'verify-mix':{type:'boolean'}, 'no-readback':{type:'boolean'},
       yes:{type:'boolean'}, json:{type:'boolean'}, timeout:{type:'string'}, engine:{type:'string'}, help:{type:'boolean'}
     }});
   } catch (error) { throw new UsageError(error.message); }
@@ -108,5 +112,6 @@ export function parseCliArgs(argv) {
   if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) throw new UsageError('--timeout must be a positive number of seconds.');
 
   return {command, json:Boolean(values.json), yes:Boolean(values.yes), autoThreshold, timeoutMs:timeoutSeconds * 1000,
-    engine:values.engine, config:{scope, analysisTracks, settings, cutScope}};
+    engine:values.engine, config:{scope, analysisTracks, settings, cutScope,
+      safety:{backup:!values['no-backup'], verifyMix:Boolean(values['verify-mix']), readback:!values['no-readback']}}};
 }

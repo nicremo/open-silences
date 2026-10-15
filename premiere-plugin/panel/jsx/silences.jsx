@@ -15,8 +15,13 @@
  * * Removing the middle audio item with remove(false, true) and then the middle
  *   video item with remove(true, true) rippled both tracks exactly once.
  *
- * Not proven and therefore not used:
- * * generic multitrack or drop frame cutting,
+ * Batched cutting (OS_applyBatch) shows frame numbers while it cuts, so cut
+ * points never depend on a timecode flavour such as drop frame. It processes
+ * the timeline from the end towards the start, so one call never moves a
+ * position a later call still needs. It still waits for a check on long
+ * multitrack timelines in Premiere.
+ *
+ * Not readable and therefore not used:
  * * reading time remapping or the audible clip state (no getter on this host).
  *
  * Fail closed: unknown state blocks the cut. Nothing is guessed, nothing is
@@ -1778,6 +1783,171 @@ function OS_applyPlan(payloadJson) {
   }
 }
 
+/** Premiere display format that shows plain frame numbers. */
+var OS_DISPLAY_FRAMES = 109;
+
+/**
+ * Sets the video display format of a sequence and reports whether it took.
+ * The property is tried first, the sequence settings second.
+ */
+function os_setDisplayFormat(sequence, format) {
+  try {
+    sequence.videoDisplayFormat = format;
+  } catch (propertyError) {
+    // Read only on this host, the settings route follows.
+  }
+  if (Number(sequence.videoDisplayFormat) === format) {
+    return true;
+  }
+  try {
+    var settings = sequence.getSettings();
+    settings.videoDisplayFormat = format;
+    sequence.setSettings(settings);
+  } catch (settingsError) {
+    return false;
+  }
+  return Number(sequence.videoDisplayFormat) === format;
+}
+
+/** Undo step for a sync lock this call switched on. */
+function os_syncRestorer(qeTrack) {
+  return function () {
+    qeTrack.setSyncLock(false);
+  };
+}
+
+/**
+ * OS_applyBatch: cuts one batch of a plan on the active sequence, from the end
+ * of the timeline towards the start, so every earlier position stays valid for
+ * the next batch.
+ *
+ * While the batch runs the sequence shows frame numbers, so every cut point is
+ * a plain frame count and no drop frame timecode is parsed. Every unlocked
+ * track is sync locked, so the one ripple per piece moves all tracks together.
+ * Display format and sync locks are restored before the call returns, also
+ * after a failure.
+ */
+function OS_applyBatch(payloadJson) {
+  var active = app.project.activeSequence;
+  var restore = [];
+  var removed = 0;
+  var applied = 0;
+  try {
+    var payload = JSON.parse(payloadJson);
+    if (!payload || !payload.intervals || !payload.removals || !payload.expectedIdentity) {
+      return os_fail('The batch request is incomplete. Nothing is cut.');
+    }
+    if (!active || os_identity(active) !== payload.expectedIdentity) {
+      return os_fail('The active sequence is not the planned one. Nothing is cut.');
+    }
+    if (payload.expectedItemFingerprint && os_itemEnvelope(active) !== payload.expectedItemFingerprint) {
+      return os_fail('The sequence changed since it was read. Nothing is cut.');
+    }
+    if (payload.intervals.length === 0) {
+      return os_json({ ok: true, removed: 0, applied: 0, framesShown: false });
+    }
+    app.enableQE();
+    var qeSequence = qe.project.getActiveSequence();
+    if (!qeSequence) {
+      return os_fail('QE access is not available, nothing is cut.');
+    }
+
+    var previousFormat = os_read(function () {
+      return active.videoDisplayFormat;
+    });
+    var framesShown = false;
+    if (!previousFormat.error && previousFormat.value !== undefined && previousFormat.value !== null) {
+      var originalFormat = Number(previousFormat.value);
+      restore.push(function () {
+        os_setDisplayFormat(active, originalFormat);
+      });
+      framesShown = os_setDisplayFormat(active, OS_DISPLAY_FRAMES);
+    }
+
+    var kinds = ['video', 'audio'];
+    for (var kindIndex = 0; kindIndex < kinds.length; kindIndex++) {
+      var collection = kinds[kindIndex] === 'video' ? active.videoTracks : active.audioTracks;
+      for (var trackIndex = 0; trackIndex < collection.numTracks; trackIndex++) {
+        var qeTrack =
+          kinds[kindIndex] === 'video' ? qeSequence.getVideoTrackAt(trackIndex) : qeSequence.getAudioTrackAt(trackIndex);
+        if (qeTrack.isLocked()) {
+          continue;
+        }
+        if (!qeTrack.isSyncLocked()) {
+          qeTrack.setSyncLock(true);
+          if (!qeTrack.isSyncLocked()) {
+            return os_fail('Sync lock could not be enabled, nothing is cut.');
+          }
+          restore.push(os_syncRestorer(qeTrack));
+        }
+      }
+    }
+
+    var planIndex = os_indexPlan({ removals: payload.removals, intervals: payload.intervals });
+    var pieces = payload.intervals.slice(0);
+    pieces.sort(function (first, second) {
+      return os_compareTicks(String(second.startTicks), String(first.startTicks));
+    });
+    var videoRate = active.getSettings().videoFrameRate;
+    for (var pieceIndex = 0; pieceIndex < pieces.length; pieceIndex++) {
+      var piece = pieces[pieceIndex];
+      var tracks = planIndex.tracksOf(piece);
+      var drivers = 0;
+      for (var driverIndex = 0; driverIndex < tracks.length; driverIndex++) {
+        if (tracks[driverIndex].ripple) {
+          drivers++;
+        }
+      }
+      if (drivers !== 1) {
+        return os_fail('A piece has ' + drivers + ' ripple tracks. Stopped after ' + applied + ' pieces.');
+      }
+      // The end first: the start cut never moves the end position.
+      var edges = [String(piece.endTicks), String(piece.startTicks)];
+      for (var edgeIndex = 0; edgeIndex < edges.length; edgeIndex++) {
+        var time = new Time();
+        time.ticks = edges[edgeIndex];
+        var timecode = time.getFormatted(videoRate, active.videoDisplayFormat);
+        if (!timecode) {
+          return os_fail('A cut point cannot be expressed in the display format. Stopped after ' + applied + ' pieces.');
+        }
+        for (var razorIndex = 0; razorIndex < tracks.length; razorIndex++) {
+          var razorTrack =
+            tracks[razorIndex].kind === 'video'
+              ? qeSequence.getVideoTrackAt(tracks[razorIndex].index)
+              : qeSequence.getAudioTrackAt(tracks[razorIndex].index);
+          razorTrack.razor(timecode, true, true);
+        }
+      }
+      // Lifts first, the one ripple last.
+      tracks.sort(function (first, second) {
+        return (first.ripple ? 1 : 0) - (second.ripple ? 1 : 0);
+      });
+      for (var removalIndex = 0; removalIndex < tracks.length; removalIndex++) {
+        var task = tracks[removalIndex];
+        var hostTrack = (task.kind === 'video' ? active.videoTracks : active.audioTracks)[task.index];
+        var item = os_findExactItem(hostTrack, piece);
+        if (!item) {
+          return os_fail('A cut piece is missing on ' + task.key + '. Stopped after ' + applied + ' pieces.');
+        }
+        item.remove(task.ripple === true, true);
+        removed++;
+      }
+      applied++;
+    }
+    return os_json({ ok: true, removed: removed, applied: applied, framesShown: framesShown });
+  } catch (error) {
+    return os_fail('The batch could not be cut: ' + String(error) + ' Stopped after ' + applied + ' pieces.');
+  } finally {
+    for (var undo = restore.length - 1; undo >= 0; undo--) {
+      try {
+        restore[undo]();
+      } catch (restoreError) {
+        // Restoring is best effort, the readback reports the state.
+      }
+    }
+  }
+}
+
 function os_wavePreset() {
   try {
     var path = String(app.path).replace(/[\\\/]$/, '') + '/Contents/MediaIO/systempresets/3F3F3F3F_57415645/Waveform Audio 48kHz 16-bit.epr';
@@ -1785,8 +1955,12 @@ function os_wavePreset() {
   } catch (error) { return null; }
 }
 
+/**
+ * Every readable frame rate can be cut: cut points are frame numbers shown in
+ * the frames display format, so no timecode flavour has to be parsed.
+ */
 function os_cutRateSupported(rate) {
-  return Math.abs(rate.fps - 25) < 1e-6 || (rate.numerator === 60000 && rate.denominator === 1001);
+  return Boolean(rate) && rate.fps > 0 && rate.numerator > 0 && rate.denominator > 0;
 }
 
 /** Render selected audible tracks on a native clone, restore active sequence. */

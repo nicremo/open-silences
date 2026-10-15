@@ -531,3 +531,91 @@ test('a track without a transition list relies on a QE count of zero, never on a
   assert.deepEqual(read.tracks[0].clips.map(clip => clip.transitionIn), [null, null]);
   assert.equal(read.transitionsReadable, false);
 });
+
+/** A minimal host for OS_applyBatch: one video track with three clips at 25 fps. */
+function batchHost({ syncLocked = false, failRemove = false } = {}) {
+  const frame = TICKS / 25;
+  const log = [];
+  const clips = [[0, 4], [4, 6], [6, 12]].map(([start, end], index) => {
+    const clip = makeClip(`c${index}`, start * TICKS, end * TICKS, 0, (end - start) * TICKS, '/tmp/c.mov');
+    clip.remove = (ripple, align) => {
+      if (failRemove) throw new Error('remove failed');
+      log.push(['remove', clip.name, ripple, align]);
+    };
+    return clip;
+  });
+  const track = makeTrack(clips);
+  const sequence = {
+    sequenceID: 'seq',
+    name: 'seq',
+    videoDisplayFormat: 106,
+    getSettings: () => ({ videoFrameRate: { seconds: 1 / 25 } }),
+    videoTracks: { numTracks: 1, 0: track },
+    audioTracks: { numTracks: 0 }
+  };
+  const qeTrack = {
+    synced: syncLocked,
+    isLocked: () => false,
+    isSyncLocked() { return this.synced; },
+    setSyncLock(value) { this.synced = value; log.push(['sync', value]); },
+    razor: timecode => log.push(['razor', timecode, sequence.videoDisplayFormat])
+  };
+  const app = {
+    project: { documentID: 'doc', activeSequence: sequence },
+    enableQE: () => {}
+  };
+  const qe = { project: { getActiveSequence: () => ({ getVideoTrackAt: () => qeTrack, getAudioTrackAt: () => qeTrack }) } };
+  function Time() { this.ticks = '0'; }
+  Time.prototype.getFormatted = function (rate, format) {
+    return format === 109 ? String(Number(this.ticks) / frame) : '00:00:00:00';
+  };
+  const sandbox = vm.createContext({ app, qe, Time });
+  vm.runInContext(source, sandbox, { filename: 'silences.jsx' });
+  return { sandbox, log, sequence, qeTrack };
+}
+
+const batchPayload = extra => JSON.stringify({
+  expectedIdentity: 'doc:seq',
+  intervals: [{ startTicks: String(4 * TICKS), endTicks: String(6 * TICKS), cut: 0 }],
+  removals: [{ trackKind: 'video', trackIndex: 0, startTicks: String(4 * TICKS), endTicks: String(6 * TICKS), ripple: true }],
+  ...extra
+});
+
+test('a batch cuts in frames, ripples once and restores display format and sync lock', () => {
+  const { sandbox, log, sequence, qeTrack } = batchHost();
+  const reply = JSON.parse(vm.runInContext(`OS_applyBatch(${JSON.stringify(batchPayload())})`, sandbox));
+  assert.equal(reply.ok, true, reply.error);
+  assert.deepEqual({ removed: reply.removed, applied: reply.applied, framesShown: reply.framesShown }, { removed: 1, applied: 1, framesShown: true });
+  assert.deepEqual(log, [
+    ['sync', true],
+    ['razor', '150', 109],
+    ['razor', '100', 109],
+    ['remove', 'c1', true, true],
+    ['sync', false]
+  ]);
+  assert.equal(sequence.videoDisplayFormat, 106);
+  assert.equal(qeTrack.synced, false);
+});
+
+test('a batch leaves a sync lock the user had alone and restores after a failure', () => {
+  const kept = batchHost({ syncLocked: true });
+  assert.equal(JSON.parse(vm.runInContext(`OS_applyBatch(${JSON.stringify(batchPayload())})`, kept.sandbox)).ok, true);
+  assert.equal(kept.log.some(entry => entry[0] === 'sync'), false);
+
+  const failing = batchHost({ failRemove: true });
+  const reply = JSON.parse(vm.runInContext(`OS_applyBatch(${JSON.stringify(batchPayload())})`, failing.sandbox));
+  assert.equal(reply.ok, false);
+  assert.match(reply.error, /remove failed/);
+  assert.equal(failing.sequence.videoDisplayFormat, 106);
+  assert.equal(failing.qeTrack.synced, false);
+});
+
+test('a batch for another sequence or with a stale fingerprint touches nothing', () => {
+  const other = batchHost();
+  const wrong = JSON.parse(vm.runInContext(`OS_applyBatch(${JSON.stringify(batchPayload({ expectedIdentity: 'doc:other' }))})`, other.sandbox));
+  assert.equal(wrong.ok, false);
+  const stale = JSON.parse(vm.runInContext(`OS_applyBatch(${JSON.stringify(batchPayload({ expectedItemFingerprint: 'old' }))})`, other.sandbox));
+  assert.equal(stale.ok, false);
+  assert.deepEqual(other.log, []);
+  assert.equal(other.sequence.videoDisplayFormat, 106);
+});

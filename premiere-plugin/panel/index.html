@@ -160,6 +160,11 @@
             <label class="scope"><input type="radio" name="cutScope" value="selection" checked/><span><strong data-i18n="cutScope.selection">Whole selection</strong><small data-i18n="cutScope.selectionHelp">Every track is cut at each pause, gaps between clips included.</small></span></label>
             <label class="scope"><input type="radio" name="cutScope" value="dialogue"/><span><strong data-i18n="cutScope.dialogue">Under speech clips only</strong><small data-i18n="cutScope.dialogueHelp">Only where a clip lies on a chosen speech track.</small></span></label>
           </fieldset>
+          <fieldset id="safetyOptions" class="cut-scope"><legend data-i18n="safetyOptions.legend">Protection</legend>
+            <label class="scope"><input type="checkbox" id="safeBackup" checked/><span><strong data-i18n="safetyOptions.backup">Backup before the cut</strong><small data-i18n="safetyOptions.backupHelp">A copy of the sequence goes into a bin of the project.</small></span></label>
+            <label class="scope"><input type="checkbox" id="safeVerifyMix"/><span><strong data-i18n="safetyOptions.verifyMix">Check the mix again right before the cut</strong><small data-i18n="safetyOptions.verifyMixHelp">Renders the audio a second time. Slower.</small></span></label>
+            <label class="scope"><input type="checkbox" id="safeReadback" checked/><span><strong data-i18n="safetyOptions.readback">Check every clip after the cut</strong><small data-i18n="safetyOptions.readbackHelp">Compares the timeline with the plan.</small></span></label>
+          </fieldset>
         </form>
         <div id="backupNotice" hidden></div>
       </section>
@@ -173,7 +178,7 @@
         <div class="confirm-actions"><button id="confirmCancel" type="button" data-keep-enabled="true" data-i18n="confirm.cancel">Don't cut</button><button id="confirmCut" type="button" class="primary" data-keep-enabled="true" data-i18n="confirm.cut">Cut now</button></div>
       </div>
       <div id="result" class="result" role="status" aria-live="polite" hidden><strong id="resultValue"></strong><span id="resultDetail"></span></div>
-      <p id="safety" class="safety" data-i18n="safety" hidden>A backup is created automatically before the cut.</p>
+      <p id="safety" class="safety" hidden>A backup is created automatically before the cut.</p>
       <button id="primary" type="button" class="primary" disabled>Continue to settings</button>
       <button id="cancel" type="button" data-i18n="cancel" hidden>Cancel analysis</button>
     </footer>

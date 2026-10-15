@@ -28,6 +28,8 @@ import {
   subtractTicks,
   summarizePlan,
   summarizeSkipped,
+  planBatches,
+  verifyCutReadback,
   ticksPerFrameFor,
   ticksToSeconds,
   timeRemapFlagFromComponents,
@@ -900,4 +902,37 @@ test('cut scope and cut spacing reach the engine only when given', () => {
   const chosen = buildSnapshot({ ...base, cutScope: 'selection', parameters: { ...base.parameters, minCutSpacing: 1 } });
   assert.equal(chosen.cutScope, 'selection');
   assert.equal(chosen.parameters.minCutSpacing, 1);
+});
+
+test('batches hold whole cuts from the end of the timeline with their removals', () => {
+  const piece = (start, end, cut) => ({ startTicks: String(start), endTicks: String(end), cut });
+  const plan = {
+    intervals: [piece(0, 10, 0), piece(10, 20, 0), piece(30, 40, 1), piece(50, 60, 2), piece(70, 80, 3), piece(90, 95, 4)],
+    removals: [{ trackKind: 'video', trackIndex: 0, startTicks: '10', endTicks: '20', ripple: true },
+      { trackKind: 'audio', trackIndex: 0, startTicks: '10', endTicks: '20', ripple: false }]
+  };
+  const batches = planBatches(plan, 2);
+  assert.deepEqual(batches.map(b => b.cutCount), [2, 2, 1]);
+  assert.deepEqual(batches.map(b => b.intervals.map(i => i.cut)), [[4, 3], [2, 1], [0, 0]]);
+  assert.equal(batches[2].removals.length, 2);
+  assert.equal(batches[0].removals.length, 0);
+});
+
+test('the readback after a batched cut predicts sources only at normal speed', () => {
+  const second = 254016000000;
+  const item = (speed, sourceOut) => ({ startTicks: '0', endTicks: String(10 * second), sourceInTicks: '0',
+    sourceOutTicks: String(sourceOut), mediaPath: '/a.mov', projectItemId: 'a', disabled: false, speed });
+  const cut = [{ startTicks: String(2 * second), endTicks: String(3 * second) }];
+  const after = (speed, sources) => [{ kind: 'video', index: 0, items: [
+    { startTicks: '0', endTicks: String(2 * second), sourceInTicks: '0', sourceOutTicks: String(sources[0]), mediaPath: '/a.mov', projectItemId: 'a', disabled: false, speed },
+    { startTicks: String(2 * second), endTicks: String(9 * second), sourceInTicks: String(sources[1]), sourceOutTicks: String(sources[2]), mediaPath: '/a.mov', projectItemId: 'a', disabled: false, speed }
+  ] }];
+  const fast = [{ kind: 'video', index: 0, items: [item(2, 20 * second)] }];
+  assert.deepEqual(verifyCutReadback({ before: fast, intervals: cut, after: after(2, [4 * second, 6 * second, 20 * second]) }), []);
+  const normal = [{ kind: 'video', index: 0, items: [item(1, 10 * second)] }];
+  assert.deepEqual(verifyCutReadback({ before: normal, intervals: cut, after: after(1, [2 * second, 3 * second, 10 * second]) }), []);
+  assert.ok(verifyCutReadback({ before: normal, intervals: cut, after: after(1, [2 * second, 4 * second, 10 * second]) }).length > 0);
+  const shifted = after(1, [2 * second, 3 * second, 10 * second]);
+  shifted[0].items[1].startTicks = String(3 * second);
+  assert.ok(verifyCutReadback({ before: normal, intervals: cut, after: shifted }).length > 0);
 });

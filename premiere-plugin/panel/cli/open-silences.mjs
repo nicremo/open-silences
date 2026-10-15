@@ -137,9 +137,9 @@ export async function main(argv, deps = {}) {
     const result = await workflow.run(config, 'full');
     if (!result?.ok) return fail(Error(lastError ?? 'The cut failed.'), backupName ? {backupName} : {});
     const summary = result.summary ?? {cutCount:0, removedSeconds:0};
-    const out = {ok:true, cutCount:summary.cutCount, removedSeconds:summary.removedSeconds, backupName:result.backup.backupName,
+    const out = {ok:true, cutCount:summary.cutCount, removedSeconds:summary.removedSeconds, backupName:result.backup?.backupName ?? null,
       skipped:summary.skipped ?? {count:0, reasons:[]}, settings:config.settings, noiseFloorEstimated};
-    report(out, [`${out.cutCount} cuts, ${out.removedSeconds.toFixed(2)} s removed.`, ...skippedLine(out.skipped), `Backup: ${out.backupName}`]);
+    report(out, [`${out.cutCount} cuts, ${out.removedSeconds.toFixed(2)} s removed.`, ...skippedLine(out.skipped), out.backupName ? `Backup: ${out.backupName}` : 'No backup.']);
     return EXIT.ok;
   } catch (error) {
     return fail(error, backupName ? {backupName} : {});
