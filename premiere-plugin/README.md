@@ -5,37 +5,40 @@ Lokales Stillenschneiden in Premiere Pro. Das Panel spricht Englisch, Spanisch u
 1. Ganze Timeline, In/Out oder ausgewählte Clips wählen. Die Audiospuren mit Sprache markieren.
 2. Noise Floor und Schnitttempo einstellen. Auf **Stillen entfernen** klicken.
 
-Das Preset **Standard** verwendet **-45 dB** und viermal **160 ms**. Änderungen bleiben lokal gespeichert. Die anderen Tempi sind eigene Open-Silences-Presets.
+Das Preset **Standard** verwendet **-45 dB** und viermal **160 ms**. Änderungen bleiben lokal gespeichert. Die anderen Tempi setzen alle vier Zeiten auf denselben Wert: 500, 350, 200, 100 oder 50 ms.
 
 ## Was beim Schneiden passiert
 
-Zuerst wird eine native Sequenzkopie im Projektordner **Open Silences Backups** erstellt, eindeutig identifiziert und mit der aktiven Sequenz verglichen. Anschließend rendert Premiere die gewählten Audiospuren auf einer separaten Analysekopie. Die Rust-Engine liest das PCM-Audio direkt, erkennt Stillen und plant Grenzen in exakten Premiere-Ticks. Danach zeigt das Panel, wie viele Pausen gefunden wurden und wie viel Zeit entfällt. Geschnitten wird erst nach Klick auf **Jetzt schneiden**. **Nicht schneiden** lässt die Sequenz unverändert, das Backup bleibt im Projekt. Ein erneuter Export prüft den aktuellen Audiomix vor dem Schnitt.
+Ist **Backup vor dem Schnitt** eingeschaltet (Standard), wird zuerst eine native Sequenzkopie im Projektordner **Open Silences Backups** erstellt, eindeutig identifiziert und mit der aktiven Sequenz verglichen. Anschließend rendert Premiere die gewählten Audiospuren als WAV mit 16 kHz in Mono. Die übrigen Audiospuren sind dafür kurz stummgeschaltet und werden danach wiederhergestellt, auch nach einem Fehler. Lehnt Premiere diese Exportvorgabe ab, rendert die eigene 48-kHz-Vorgabe von Premiere. Die Rust-Engine liest das PCM-Audio direkt, erkennt Stillen und plant Grenzen in exakten Premiere-Ticks. Danach zeigt das Panel, wie viele Pausen gefunden wurden und wie viel Zeit entfällt. Geschnitten wird erst nach Klick auf **Jetzt schneiden**. **Nicht schneiden** lässt die Sequenz unverändert. Auf Wunsch prüft ein erneuter Export den Audiomix direkt vor dem Schnitt.
 
-Geschnitten wird die ursprüngliche aktive Sequenz. Das Backup bleibt erhalten. Bild und alle betroffenen Tonspuren rücken zusammen. Nach dem Eingriff werden alle Clippositionen, Quellbereiche, Medienzuordnungen und das unveränderte Backup geprüft. Bei unerwartetem Zustand gibt es keinen weiteren Schnitt und keine Erfolgsmeldung. Ein bereits begonnener Eingriff wird nicht automatisch zurückgerollt. In diesem Fall steht das benannte Backup zum Wiederherstellen bereit.
+Geschnitten wird die ursprüngliche aktive Sequenz, in Paketen zu 50 Schnitten vom Ende der Timeline zum Anfang. Während eines Pakets zeigt die Sequenz Frames statt Timecode, deshalb lässt sich jede Bildrate schneiden. Auf allen nicht gesperrten Spuren ist dabei die Synchronisationssperre eingeschaltet, so rücken Bild und Ton gemeinsam zusammen. Anzeigeformat und Synchronisationssperren werden danach wiederhergestellt, auch nach einem Fehler. Ist **Jeden Clip nach dem Schnitt prüfen** eingeschaltet (Standard), werden anschließend alle Clippositionen, Medienzuordnungen und ein vorhandenes Backup geprüft. Bei unerwartetem Zustand gibt es keine Erfolgsmeldung. Ein bereits begonnener Eingriff wird nicht automatisch zurückgerollt. In diesem Fall steht das Backup zum Wiederherstellen bereit, sofern es eingeschaltet war.
 
-Analysekopien liegen getrennt unter **Open Silences Analysis**. Audioexport und nativer Schnitt blockieren zeitweise Premiere und sind nicht abbrechbar. Die Rust-Analyse ist abbrechbar. Laufbelege inklusive WAV-Dateien bleiben im temporären Ordner `open-silences-evidence` erhalten.
+Für den Export entsteht keine Kopie der Sequenz. Audioexport und jedes Schnittpaket blockieren Premiere kurz. Ein Abbruch greift zwischen zwei Paketen, die Rust-Analyse ist jederzeit abbrechbar. Laufbelege inklusive WAV-Dateien bleiben im temporären Ordner `open-silences-evidence` erhalten.
 
 ## Einstellungen
 
 | Einstellung | Bedeutung |
 | --- | --- |
-| Noise Floor (`thresholdDb`) | Audio unter diesem Pegel gilt als Stille. Größere Werte entfernen eher leise Passagen. |
-| Stillen ab (`minPause`) | Pausen ab dieser Dauer werden entfernt. Kürzere Pausen bleiben erhalten. |
-| Sprache ab (`minSpeech`) | Kürzere und leise Geräusche zählen nicht als Sprache. Kurze laute Wörter bleiben. |
+| Noise Floor (`thresholdDb`) | Audio strikt unter diesem Pegel gilt als Stille. Größere Werte entfernen eher leise Passagen. |
+| Stillen ab (`minPause`) | Kürzester Schnitt, gemessen nach Abzug der Luft. Kürzere Pausen bleiben erhalten. |
+| Sprache ab (`minSpeech`) | Sprache zwischen zwei Schnitten, die samt Luft kürzer ist, wird mitgeschnitten. |
 | Luft vor Sprache (`leadIn`) | Audio vor dem nächsten Sprachstück, das erhalten bleibt. |
 | Luft nach Sprache (`tail`) | Audio nach dem vorigen Sprachstück, das erhalten bleibt. |
+| Abstand zwischen Schnitten (`minCutSpacing`) | Liegen Schnitte näher beieinander, bleibt jeweils der längste stehen. 0 schaltet das aus (Standard). |
+| Was geschnitten wird (`cutScope`) | **Ganze Auswahl** (Standard): alle Spuren an jeder Pause, auch zwischen Clips. **Nur unter Sprachclips**: nur dort, wo auf einer gewählten Sprachspur ein Clip liegt. |
+| Absicherung | Backup und Prüfung nach dem Schnitt sind eingeschaltet, der zweite Export vor dem Schnitt ist aus. Alle drei lassen sich einzeln schalten. |
 
-Bildmaterial ohne Dialogclip (B-Roll) wird nie entfernt. Schnitte unter 100 ms werden übersprungen. Die vollständige Erkennung steht in `docs/DETECTION.md`.
+Jede Schnittkante liegt zwischen den 20-ms-Pegelwerten dort, wo die Sprache ausklingt, und wird nach innen auf ganze Frames gerundet. Ein einzelner Frame ist ein gültiger Schnitt. Die vollständige Erkennung steht in `docs/DETECTION.md`.
 
-**Pegel automatisch schätzen** berechnet lokal einen vorsichtigen Vorschlag aus ruhigen und lauten Abschnitten des gewählten Bereichs. Das ist eine statistische Schätzung, keine Cloudfunktion. Bei gleichförmigem oder ausschließlich stillem Audio wird kein Wert erfunden. Der Vorschlag lässt sich manuell ändern.
+**Pegel automatisch schätzen** teilt die Pegel des gewählten Bereichs lokal in zwei Gruppen, Raumton und Sprache, und schlägt die Obergrenze des Raumtons in ganzen dB vor. Das ist eine statistische Schätzung, keine Cloudfunktion. Der Vorschlag lässt sich manuell ändern.
 
 In/Out müssen tatsächlich in Premiere gesetzt sein. Bei ausgewählten Clips werden deren Zeitbereiche vereinigt. Lücken zwischen getrennten Bereichen werden nicht bearbeitet. Ripple verschiebt nachfolgende Clips entsprechend der entfernten Dauer.
 
 ## Geprüfter Umfang
 
-macOS arm64, Premiere Pro **26.5.2**, **25 und 59,94 fps**. Eigene 12-Sekunden-Farbtafeln mit Stereo-Ton und zwei bekannten Stillen bilden die Hosttests. Alle drei Bereichsarten, bestehende Schnittgrenzen und mehrere Tonspuren wurden im echten Host geprüft. Frame-Rundung erfolgt nach innen, damit Schnitte nicht über den gewählten Bereich hinausreichen. Die Abnahme des installierten Panels in Premiere Pro steht noch aus.
+macOS arm64, Premiere Pro **26.5.2**. Eigene 12-Sekunden-Farbtafeln mit Stereo-Ton und zwei bekannten Stillen bilden die Hosttests. Bisher wurden 25 und 59,94 fps, alle drei Bereichsarten, bestehende Schnittgrenzen und mehrere Tonspuren im echten Host geprüft. Der Schnitt in Paketen, der Export mit 16 kHz Mono und weitere Bildraten sind neu und dort noch nicht geprüft. Frame-Rundung erfolgt nach innen, damit Schnitte nicht über den gewählten Bereich hinausreichen. Die Abnahme des installierten Panels in Premiere Pro steht noch aus.
 
-Andere Premiere-Versionen, Windows und andere Bildraten sind nicht freigegeben. Gesperrter Content, fehlende Medien, Übergänge und ungeeignete Timeline-Zustände können den Schnitt stoppen. QE ist eine undokumentierte Adobe-Schnittstelle. Die Nachprüfung schützt den unterstützten Ablauf, sie ist keine Garantie für beliebige komplexe Projekte. Eine einzelne Undo-Gruppe wird nicht zugesagt.
+Andere Premiere-Versionen und Windows sind nicht freigegeben. Gesperrter Content, fehlende Medien und ungeeignete Timeline-Zustände können den Schnitt stoppen. Ein Übergang stoppt nur die Pause, in der er liegt. Panel, Vorschau und CLI nennen dann den Grund. QE ist eine undokumentierte Adobe-Schnittstelle. Die Nachprüfung schützt den unterstützten Ablauf, sie ist keine Garantie für beliebige komplexe Projekte. Eine einzelne Undo-Gruppe wird nicht zugesagt.
 
 ## Bauen und installieren
 

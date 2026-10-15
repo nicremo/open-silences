@@ -56,7 +56,7 @@ test('defaults are entire timeline, A1, -46 dB and the Standard pacing',()=>{
 });
 test('presets, single timing overrides, tracks, scope and auto threshold',()=>{
   const parsed = parseCliArgs(['cut','--yes','--preset','calm','--tail','90','--tracks','A1,a3','--scope','inout','--threshold','auto','--json']);
-  assert.deepEqual(parsed.config.settings, {threshold:-46, minPause:600, minSpeech:160, leadIn:220, tail:90, minCutSpacing:0});
+  assert.deepEqual(parsed.config.settings, {threshold:-46, minPause:500, minSpeech:500, leadIn:500, tail:90, minCutSpacing:0});
   assert.deepEqual(parsed.config.analysisTracks, [{kind:'audio', index:0}, {kind:'audio', index:2}]);
   assert.equal(parsed.config.scope, 'inout');
   assert.equal(parsed.autoThreshold, true);

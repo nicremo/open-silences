@@ -1963,18 +1963,94 @@ function os_cutRateSupported(rate) {
   return Boolean(rate) && rate.fps > 0 && rate.numerator > 0 && rate.denominator > 0;
 }
 
-/** Render selected audible tracks on a native clone, restore active sequence. */
+/** Sample rate and channel count of the analysis render. */
+var OS_ANALYSIS_RATE = 16000;
+var OS_ANALYSIS_CHANNELS = 1;
+
+/**
+ * Replaces the value of one exporter parameter in preset XML, whichever order
+ * identifier and value have inside their parameter block. Null when absent.
+ */
+function os_setPresetParam(text, identifier, value) {
+  if (!text) {
+    return null;
+  }
+  var block = '(?:(?!</ExporterParam>)[\\s\\S])*?';
+  var after = new RegExp('(<ParamIdentifier>' + identifier + '</ParamIdentifier>' + block + '<ParamValue>)[^<]*(</ParamValue>)');
+  if (after.test(text)) {
+    return text.replace(after, '$1' + value + '$2');
+  }
+  var before = new RegExp('(<ParamValue>)[^<]*(</ParamValue>' + block + '<ParamIdentifier>' + identifier + '</ParamIdentifier>)');
+  if (before.test(text)) {
+    return text.replace(before, '$1' + value + '$2');
+  }
+  return null;
+}
+
+/**
+ * Export preset for the analysis render: Premiere's own WAV preset rewritten
+ * to 16 kHz mono in a temporary file, so the render is small and contains the
+ * mono mix the levels are measured on. Null when no WAV preset exists.
+ */
+function os_analysisPreset() {
+  var system = os_wavePreset();
+  if (!system) {
+    return null;
+  }
+  try {
+    var source = new File(system);
+    source.encoding = 'UTF-8';
+    if (!source.open('r')) {
+      return null;
+    }
+    var text = source.read();
+    source.close();
+    var rewritten = os_setPresetParam(
+      os_setPresetParam(text, 'ADBEAudioRatePerSecond', String(OS_ANALYSIS_RATE)),
+      'ADBEAudioNumChannels',
+      String(OS_ANALYSIS_CHANNELS)
+    );
+    if (!rewritten) {
+      return null;
+    }
+    var target = new File(Folder.temp.fsName + '/open-silences-analysis-16k-mono.epr');
+    target.encoding = 'UTF-8';
+    if (!target.open('w')) {
+      return null;
+    }
+    target.write(rewritten);
+    target.close();
+    return target.fsName;
+  } catch (error) {
+    return null;
+  }
+}
+
+/** Undo step for a mute state this call changed. */
+function os_muteRestorer(track, muted) {
+  return function () {
+    track.setMute(muted ? 1 : 0);
+  };
+}
+
+/**
+ * Render the chosen audio tracks of the active sequence. The other audio
+ * tracks are muted for the export and restored afterwards, also after a
+ * failure, so no copy of the sequence is needed. The render is 16 kHz mono;
+ * when Premiere refuses that preset its own 48 kHz preset renders instead.
+ */
 function OS_renderAudio(payloadJson) {
   var original = app.project.activeSequence;
+  var restore = [];
   try {
     var payload = JSON.parse(payloadJson);
     if (!original || os_identity(original) !== payload.expectedIdentity ||
         os_itemEnvelope(original) !== payload.expectedItemFingerprint ||
-        OS_readSequence() !== payload.expectedStateFingerprint) {
+        (payload.expectedStateFingerprint && OS_readSequence() !== payload.expectedStateFingerprint)) {
       return os_fail('The sequence changed before the audio export.');
     }
-    var preset = os_wavePreset();
-    if (!preset) return os_fail('The bundled WAV preset was not found.');
+    var fallback = os_wavePreset();
+    if (!fallback) return os_fail('The WAV preset of Premiere was not found.');
     var output = new File(payload.outputPath);
     if (output.exists || !output.parent.exists || !/\.wav$/i.test(output.fsName)) {
       return os_fail('The audio export needs a new WAV file in an existing folder.');
@@ -1985,33 +2061,45 @@ function OS_renderAudio(payloadJson) {
       if (ref.kind !== 'audio' || ref.index < 0 || ref.index >= original.audioTracks.numTracks || selected[ref.index]) {
         return os_fail('The chosen analysis tracks are invalid.');
       }
-      var state = os_trackState(original, qe.project.getActiveSequence(), 'audio', ref.index);
-      if (state.locked !== false || state.muted !== false) return os_fail('An analysis track is locked or muted.');
+      var chosen = original.audioTracks[ref.index];
+      if (os_flag(function () { return chosen.isLocked(); }) !== false || os_flag(function () { return chosen.isMuted(); }) !== false) {
+        return os_fail('An analysis track is locked or muted.');
+      }
       selected[ref.index] = true; count++;
     }
     if (!count) return os_fail('No audio track chosen for the export.');
-    var clone = JSON.parse(OS_cloneSequence(payload.expectedIdentity, payload.expectedItemFingerprint));
-    if (!clone.ok) return os_fail(clone.error);
-    var copy = app.project.activeSequence;
-    copy.name = String(original.name) + ' - Open Silences Analysis';
-    var analysisBin = os_pluginBin('Open Silences Analysis');
-    if (!analysisBin) return os_fail('The analysis bin could not be created.');
-    copy.projectItem.moveBin(analysisBin);
-    for (var t = 0; t < copy.audioTracks.numTracks; t++) {
-      copy.audioTracks[t].setMute(selected[t] ? 0 : 1);
-      if (Boolean(copy.audioTracks[t].isMuted()) !== !selected[t]) {
-        return os_fail('The audio tracks of the analysis copy could not be isolated.');
+    for (var t = 0; t < original.audioTracks.numTracks; t++) {
+      var track = original.audioTracks[t];
+      var muted = Boolean(track.isMuted());
+      var wanted = !selected[t];
+      if (muted === wanted) continue;
+      track.setMute(wanted ? 1 : 0);
+      restore.push(os_muteRestorer(track, muted));
+      if (Boolean(track.isMuted()) !== wanted) {
+        return os_fail('The audio tracks could not be isolated for the export.');
       }
     }
     var started = new Date().getTime();
-    var status = copy.exportAsMediaDirect(output.fsName, preset, 0);
+    var preset = os_analysisPreset();
+    var status = preset ? original.exportAsMediaDirect(output.fsName, preset, 0) : false;
     output = new File(payload.outputPath);
+    var mono = Boolean(preset) && output.exists && output.length >= 44;
+    if (!mono) {
+      // Premiere refused the rewritten preset: its own 48 kHz preset renders instead.
+      output = new File(String(payload.outputPath).replace(/\.wav$/i, '-48k.wav'));
+      if (output.exists) return os_fail('The fallback audio file already exists.');
+      status = original.exportAsMediaDirect(output.fsName, fallback, 0);
+      output = new File(output.fsName);
+    }
     if (!output.exists || output.length < 44) return os_fail('Premiere did not export a valid audio file: ' + String(status));
-    if (os_itemEnvelope(original) !== payload.expectedItemFingerprint) return os_fail('The original changed during the export.');
-    return os_json({ok:true, mediaPath:output.fsName, analysisTracks:payload.analysisTracks,
-      renderMilliseconds:new Date().getTime()-started, analysisSequenceId:copy.sequenceID, bytes:output.length});
+    return os_json({ok:true, mediaPath:output.fsName, analysisTracks:payload.analysisTracks, mono:mono,
+      renderMilliseconds:new Date().getTime()-started, bytes:output.length});
   } catch (error) { return os_fail('Audio export failed: ' + String(error)); }
-  finally { if (original) app.project.openSequence(original.sequenceID); }
+  finally {
+    for (var undo = restore.length - 1; undo >= 0; undo--) {
+      try { restore[undo](); } catch (restoreError) { /* The next read shows the state. */ }
+    }
+  }
 }
 
 /** Prove razor partitioning before deleting anything. No source-time guessing. */

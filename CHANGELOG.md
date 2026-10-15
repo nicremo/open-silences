@@ -3,6 +3,15 @@
 ## Unreleased
 
 - Agent CLI `open-silences` with `status`, `sequence`, `estimate`, `preview` and `cut --yes`, driven through an invisible bridge extension that starts with Premiere. See `docs/CLI.md`.
+- New pause detection: 20 ms levels with a -60 dBFS floor, pause edges refined between the level values, the air removed before the minimum pause is checked, short speech between two cuts joined with them and an optional spacing between cuts. See `docs/DETECTION.md`.
+- "Estimate level automatically" splits the levels into room tone and speech and suggests the top of the room tone in whole dB.
+- Cuts are rounded inwards to whole frames from the detected seconds; a single frame is a valid cut. A pause across clip boundaries counts as one cut.
+- New cut scope: the whole selection on every track (default) or only under speech clips.
+- Cutting runs in batches of 50 cuts from the end of the timeline while the sequence shows frame numbers. Every frame rate can be cut.
+- Backup, the second render of the mix and the readback are optional. A cancel takes effect between two batches.
+- The analysis render is 16 kHz mono without a copy of the sequence; the other audio tracks are muted only during the export.
+- A transition only stops the pause it lies in, and the panel, the preview and the CLI name the reason when a range stays uncut.
+- Pacing presets set all four timing values to the same value.
 
 ## 0.2.0-alpha.2
 

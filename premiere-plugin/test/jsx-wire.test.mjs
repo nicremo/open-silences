@@ -619,3 +619,86 @@ test('a batch for another sequence or with a stale fingerprint touches nothing',
   assert.deepEqual(other.log, []);
   assert.equal(other.sequence.videoDisplayFormat, 106);
 });
+
+const PRESET_XML = [
+  '<ExporterParam><ParamIdentifier>ADBEAudioRatePerSecond</ParamIdentifier><ParamType>2</ParamType><ParamValue>48000</ParamValue></ExporterParam>',
+  '<ExporterParam><ParamIdentifier>ADBEAudioNumChannels</ParamIdentifier><ParamOrdinalValue>1</ParamOrdinalValue><ParamValue>2</ParamValue></ExporterParam>'
+].join('\n');
+
+/** Active sequence with two audio tracks, a file system and an exporter. */
+function renderHost({ refuseMono = false } = {}) {
+  const files = new Map();
+  const presetPath = '/Premiere.app/Contents/MediaIO/systempresets/3F3F3F3F_57415645/Waveform Audio 48kHz 16-bit.epr';
+  files.set(presetPath, PRESET_XML);
+  function File(path) { this.fsName = path; }
+  Object.defineProperty(File.prototype, 'exists', { get() { return files.has(this.fsName); } });
+  Object.defineProperty(File.prototype, 'length', { get() { return (files.get(this.fsName) || '').length; } });
+  Object.defineProperty(File.prototype, 'parent', { get() { return { exists: true }; } });
+  File.prototype.open = function (mode) { if (mode === 'w') files.set(this.fsName, ''); return files.has(this.fsName); };
+  File.prototype.read = function () { return files.get(this.fsName); };
+  File.prototype.write = function (text) { files.set(this.fsName, text); };
+  File.prototype.close = () => {};
+  const audioTrack = (name, muted) => ({ ...makeTrack([]), name, muted, isMuted() { return this.muted; },
+    setMute(value) { this.muted = value === 1; }, isLocked: () => false });
+  const sequence = {
+    sequenceID: 'seq', name: 'seq',
+    videoTracks: { numTracks: 0 },
+    audioTracks: { numTracks: 2, 0: audioTrack('Voice', false), 1: audioTrack('Music', false) }
+  };
+  const exports = [];
+  sequence.exportAsMediaDirect = (out, preset) => {
+    exports.push({ out, preset: files.get(preset), musicMuted: sequence.audioTracks[1].muted });
+    if (refuseMono && preset.includes('16k')) return false;
+    files.set(out, 'RIFF'.padEnd(64, 'x'));
+    return true;
+  };
+  const app = { path: '/Premiere.app', project: { documentID: 'doc', activeSequence: sequence } };
+  const sandbox = vm.createContext({ app, qe: {}, File, Folder: { temp: { fsName: '/tmp/os' } } });
+  vm.runInContext(source, sandbox, { filename: 'silences.jsx' });
+  const items = vm.runInContext('OS_readItems()', sandbox);
+  const payload = JSON.stringify({ expectedIdentity: 'doc:seq', expectedItemFingerprint: items,
+    outputPath: '/tmp/os/timeline.wav', analysisTracks: [{ kind: 'audio', index: 0 }] });
+  return { sandbox, sequence, exports, payload };
+}
+
+test('the analysis render is 16 kHz mono and other tracks are muted only during the export', () => {
+  const { sandbox, sequence, exports, payload } = renderHost();
+  const reply = JSON.parse(vm.runInContext(`OS_renderAudio(${JSON.stringify(payload)})`, sandbox));
+  assert.equal(reply.ok, true, reply.error);
+  assert.equal(reply.mono, true);
+  assert.equal(reply.mediaPath, '/tmp/os/timeline.wav');
+  assert.equal(exports.length, 1);
+  assert.match(exports[0].preset, /<ParamValue>16000<\/ParamValue>/);
+  assert.match(exports[0].preset, /ADBEAudioNumChannels<\/ParamIdentifier><ParamOrdinalValue>1<\/ParamOrdinalValue><ParamValue>1<\/ParamValue>/);
+  assert.equal(exports[0].musicMuted, true);
+  assert.equal(sequence.audioTracks[1].muted, false, 'the mute state is restored');
+});
+
+test('a render with a stale state fingerprint exports and mutes nothing', () => {
+  const { sandbox, sequence, exports, payload } = renderHost();
+  const stale = JSON.stringify({ ...JSON.parse(payload), expectedStateFingerprint: 'stale' });
+  const reply = JSON.parse(vm.runInContext(`OS_renderAudio(${JSON.stringify(stale)})`, sandbox));
+  assert.equal(reply.ok, false);
+  assert.equal(reply.error, 'The sequence changed before the audio export.');
+  assert.equal(exports.length, 0);
+  assert.equal(sequence.audioTracks[1].muted, false);
+});
+
+test('a refused mono preset falls back to the stereo preset of Premiere', () => {
+  const { sandbox, exports, payload } = renderHost({ refuseMono: true });
+  const reply = JSON.parse(vm.runInContext(`OS_renderAudio(${JSON.stringify(payload)})`, sandbox));
+  assert.equal(reply.ok, true, reply.error);
+  assert.equal(reply.mono, false);
+  assert.equal(reply.mediaPath, '/tmp/os/timeline-48k.wav');
+  assert.equal(exports.length, 2);
+  assert.match(exports[1].preset, /<ParamValue>48000<\/ParamValue>/);
+});
+
+test('preset parameters are found in either order inside their block', () => {
+  const sandbox = vm.createContext({});
+  vm.runInContext(source, sandbox, { filename: 'silences.jsx' });
+  const swapped = '<ExporterParam><ParamValue>2</ParamValue><ParamIdentifier>ADBEAudioNumChannels</ParamIdentifier></ExporterParam>';
+  assert.equal(sandbox.os_setPresetParam(swapped, 'ADBEAudioNumChannels', '1'),
+    '<ExporterParam><ParamValue>1</ParamValue><ParamIdentifier>ADBEAudioNumChannels</ParamIdentifier></ExporterParam>');
+  assert.equal(sandbox.os_setPresetParam(PRESET_XML, 'ADBEMissing', '1'), null);
+});

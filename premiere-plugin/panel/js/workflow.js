@@ -12,11 +12,11 @@ export const DEFAULT_SAFETY = Object.freeze({backup:true, verifyMix:false, readb
 // Timing presets in milliseconds: [minPause, minSpeech, leadIn, tail]. Names: preset.<key>.
 export const PRESETS = Object.freeze({
   mine: {values:[160,160,160,160]},
-  calm: {values:[600,160,220,300]},
-  measured: {values:[400,160,180,240]},
-  paced: {values:[260,160,160,180]},
-  energetic: {values:[160,120,100,120]},
-  jumpy: {values:[100,80,60,80]}
+  calm: {values:[500,500,500,500]},
+  measured: {values:[350,350,350,350]},
+  paced: {values:[200,200,200,200]},
+  energetic: {values:[100,100,100,100]},
+  jumpy: {values:[50,50,50,50]}
 });
 export const TIMING_FIELDS = Object.freeze(['minPause','minSpeech','leadIn','tail']);
 const TPS = 254016000000n;
@@ -123,7 +123,9 @@ export function createWorkflow({host, engine, ui, t = ENGLISH}) {
       const current = await take('readItems');
       if (current.raw !== original.raw) throw Error(t('error.timelineChangedBackup'));
       const tracks = state.parsed.tracks.map(t => ({...t, role:analysisTracks.some(ref => ref.kind === t.kind && ref.index === t.index) ? 'dialogue' : 'other'}));
-      const renderPayload = {expectedIdentity:state.parsed.identity, expectedStateFingerprint:state.raw, expectedItemFingerprint:original.raw, analysisTracks};
+      // The state was read just now and is compared again before the cut, so the
+      // render does not read it a third time.
+      const renderPayload = {expectedIdentity:state.parsed.identity, expectedItemFingerprint:original.raw, analysisTracks};
       async function analyze(verifying = false) {
         const renderText = t(verifying ? 'status.verifyMix' : estimateOnly ? 'status.estimate' : 'status.audio');
         ui.busy(true, renderText, false, verifying ? 'verify' : 'audio');

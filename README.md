@@ -44,13 +44,13 @@ Removing pauses from a talking head video should take one click, not an afternoo
 
 - **Free and open source.** MIT licensed. No subscription, no account, no feature gate.
 - **Local.** Your audio never leaves your Mac. Premiere renders the selected voice tracks, a Rust engine reads them directly.
-- **A backup before every run.** Open Silences duplicates your sequence into a project bin and verifies the copy before it analyses or cuts anything.
+- **A backup before every run, if you want it.** Open Silences duplicates your sequence into a project bin and verifies the copy before it cuts. The backup can be switched off for speed.
 - **See it before it happens.** The panel shows how many pauses it found and how much time goes away. Nothing is cut until you click **Cut now**.
-- **Speech stays.** Short, loud words such as "ja" or "and" stay. Breaths, clicks and other short quiet noises inside a pause do not count as speech.
-- **Only dialogue time is judged.** B-roll and gaps without a dialogue clip are never cut, and cuts shorter than 100 ms are skipped.
-- **An automatic threshold.** "Estimate level automatically" finds the gap between your room tone and your quietest syllables and suggests a noise floor in the middle of it.
-- **Fast assembly.** Pauses are lifted and every remaining clip moves once, instead of one ripple delete per pause.
-- **Verified result.** After the cut every clip position, source range and media reference is read back and compared with the plan.
+- **Precise edges.** Every cut edge is placed between the 20 ms level values where speech fades, then rounded inwards to whole frames, so a cut never reaches into speech.
+- **Whole selection or speech clips only.** By default every track is cut at each pause inside the range, gaps between clips included. "Under speech clips only" cuts just where a clip lies on a chosen speech track.
+- **An automatic threshold.** "Estimate level automatically" splits the levels into room tone and speech and suggests the top of the room tone.
+- **Fast cutting.** Cuts run in batches of 50 from the end of the timeline with one ripple per clip piece, while the timeline shows frame numbers. That is why every frame rate works.
+- **Verified result.** After the cut every clip position and media reference is read back and compared with the plan. This check can be switched off too.
 
 Open Silences is an independent project. It is not affiliated with or endorsed by Adobe.
 
@@ -103,18 +103,17 @@ The package is written to `premiere-plugin/dist/open-silences/`. The build insta
 
 ```mermaid
 flowchart LR
-    A[Choose range and voice tracks] --> B[Verified sequence backup]
-    B --> C[Premiere renders the voice tracks]
-    C --> D[Rust engine: 10 ms levels, speech regions, pauses]
+    A[Choose range and voice tracks] --> B[Optional sequence backup]
+    B --> C[Premiere renders the voice tracks as 16 kHz mono]
+    C --> D[Rust engine: 20 ms levels, refined pause edges]
     D --> E[Frame aligned plan in exact ticks]
     E --> F{Preview: N pauses, X s}
-    F -->|Cut now| G[Second render checks the mix]
-    G --> H[Lift pauses, move each clip once]
-    H --> I[Readback against plan and backup]
-    F -->|Don't cut| J[Nothing changes, backup stays]
+    F -->|Cut now| G[Batches of 50 cuts from the end]
+    G --> H[Optional readback against the plan]
+    F -->|Don't cut| J[Nothing changes]
 ```
 
-The detector is specified in [docs/DETECTION.md](docs/DETECTION.md): audible regions above the threshold, short gaps bridged, quiet blips dropped, air kept before and after speech. The planner snaps every cut inward to whole frames, so a cut never reaches into speech. The architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+The detector is specified in [docs/DETECTION.md](docs/DETECTION.md): levels strictly below the threshold are quiet, pause edges move between the level values by energy, the air comes off before the minimum pause is checked, and short speech between two cuts joins them. The planner rounds every cut inwards to whole frames, so a cut never reaches into speech. The architecture is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Settings
 
@@ -122,13 +121,16 @@ The panel speaks English, Spanish and German. It asks for your language the firs
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| Noise floor | -45 dB | Audio below this level counts as silence. "Estimate level automatically" suggests a value for your recording. |
-| Silence from | 160 ms | Shorter pauses stay. |
-| Speech from | 160 ms | Shorter, quiet sounds do not count as speech. Short loud words stay. |
+| Noise floor | -45 dB | Audio strictly below this level counts as silence. "Estimate level automatically" suggests a value for your recording. |
+| Silence from | 160 ms | Shortest cut, measured after the air is kept. |
+| Speech from | 160 ms | Speech between two cuts that is shorter than this, air included, is cut with them. |
 | Air before speech | 160 ms | Audio kept before speech starts. |
 | Air after speech | 160 ms | Audio kept after speech ends. |
+| Space between cuts | 0 ms (off) | Where cuts lie closer together, the longest of them stays. |
+| What gets cut | Whole selection | Every track in the range, or only under speech clips. |
+| Protection | Backup and readback on | A backup before the cut, a second render right before it and a readback after it can each be switched on or off. |
 
-Pacing presets from **Standard** to **Very tight** set the four timing values at once.
+Pacing presets from **Standard** to **Very tight** set the four timing values at once: Standard keeps 160 ms, the others set all four to 500, 350, 200, 100 or 50 ms.
 
 ## Limits
 
@@ -136,11 +138,11 @@ Pacing presets from **Standard** to **Very tight** set the four timing values at
 | --- | --- |
 | Operating system | macOS on Apple Silicon |
 | Premiere Pro | 26.5.x |
-| Frame rates | 25 and 59.94 fps |
+| Frame rates | Every rate Premiere reports; cut points are frame numbers |
 | Integration | CEP panel and ExtendScript; native cutting uses the undocumented QE API |
-| Timeline | Speed changes, reversed or nested clips, transitions and locked content stop the cut instead of being guessed |
+| Timeline | A transition inside a pause and locked content that a ripple would move stop that pause instead of being guessed |
 
-Audio export and cutting block Premiere for a moment and cannot be cancelled. A failed cut may leave a partly edited sequence; the named backup is there to restore it. Windows and other frame rates are not supported yet. More detail in the [panel README](premiere-plugin/README.md) (German).
+Audio export and every batch of cuts block Premiere for a moment. A cancel takes effect between two batches. A failed cut may leave a partly edited sequence; the backup, when switched on, is there to restore it. The batched cut path is new in this version. Windows is not supported yet. More detail in the [panel README](premiere-plugin/README.md) (German).
 
 ## Privacy
 

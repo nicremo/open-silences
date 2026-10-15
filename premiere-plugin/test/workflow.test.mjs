@@ -91,6 +91,8 @@ test('the threshold estimate never asks for confirmation',async()=>{
 test('presets are values only, their names live in the language tables',()=>{
  assert.deepEqual(Object.keys(PRESETS),['mine','calm','measured','paced','energetic','jumpy']);
  assert.deepEqual(PRESETS.mine.values,[160,160,160,160]);
+ assert.deepEqual(Object.values(PRESETS).map(preset=>preset.values[0]),[160,500,350,200,100,50]);
+ for (const preset of Object.values(PRESETS)) assert.ok(preset.values.every(value=>value===preset.values[0]));
 });
 test('workflow messages follow the injected language and default to English',async()=>{
  const english=harness();const failed=await english.workflow.run(config);
