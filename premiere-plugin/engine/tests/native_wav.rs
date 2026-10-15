@@ -1,6 +1,6 @@
 //! Native PCM reader tests use generated audio only, without external tools.
 use silences_engine::{
-    audio::{analyze_native_wav, AnalyzeOptions},
+    audio::{analyze_native_wav, analyze_native_wav_range, AnalyzeOptions},
     process::CancelToken,
 };
 use std::{fs, path::PathBuf};
@@ -49,12 +49,8 @@ fn native_pcm_preserves_opposite_phase_channels_and_partial_window() {
     assert_eq!(info.channels, 2);
     assert_eq!(info.sample_rate, 48000);
     assert_eq!(analysis.db_values.len(), 3);
-    for level in &analysis.db_values {
-        assert!(
-            (level - 20.0 * 0.5f64.log10()).abs() < 1e-9,
-            "level {level}"
-        );
-    }
+    // 20 log10(0.5) is -6.0206, stored rounded to two decimals.
+    assert_eq!(analysis.db_values, vec![-6.02; 3]);
     assert_eq!(analysis.rms_values, vec![0.5; 3]);
     assert_eq!(analysis.window_frames, 960);
     assert_eq!(analysis.duration_sec, 2407.0 / 48000.0);
@@ -120,4 +116,34 @@ fn native_pcm_honors_cancellation_and_rejects_wrong_format() {
     )
     .unwrap_err()
     .contains("unsupported WAV format"));
+}
+
+#[test]
+fn a_range_starts_the_grid_at_its_first_sample() {
+    let (path, wav) = fixture();
+    fs::write(&path, wav).unwrap();
+    let options = AnalyzeOptions {
+        values_per_second: 50.0,
+        ..AnalyzeOptions::default()
+    };
+    let (info, analysis) = analyze_native_wav_range(
+        path.to_str().unwrap(),
+        &options,
+        Some((0.01, 0.04)),
+        &CancelToken::default(),
+    )
+    .unwrap();
+    // 480 to 1920: one full window and a partial one of 480 frames.
+    assert_eq!(analysis.db_values.len(), 2);
+    assert_eq!(analysis.duration_sec, 1440.0 / 48000.0);
+    assert_eq!(info.duration, 2407.0 / 48000.0);
+    for range in [(0.06, 0.08), (0.03, 0.02), (f64::NAN, 1.0)] {
+        assert!(analyze_native_wav_range(
+            path.to_str().unwrap(),
+            &options,
+            Some(range),
+            &CancelToken::default()
+        )
+        .is_err());
+    }
 }

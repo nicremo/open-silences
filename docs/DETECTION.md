@@ -4,78 +4,100 @@ This document specifies how Open Silences decides which parts of the timeline ar
 
 ## Goals
 
-1. Never remove speech. When in doubt, keep audio.
-2. Keep short, clearly audible words such as "ja" or "und", even when they are shorter than the minimum speech duration.
-3. Ignore short, quiet noises such as breaths, clicks and chair sounds inside a pause.
-4. Produce cuts that are worth a jump cut: no removal shorter than 100 ms or two frames.
-5. Be deterministic. The same audio and settings always produce the same plan.
+1. Cut wherever the level stays below the threshold, and keep a defined amount of air around speech.
+2. Place every cut edge as close to the real end and start of speech as the level grid allows.
+3. Produce exactly the cuts the settings describe: every cut is at least the minimum pause long.
+4. Be deterministic. The same audio and settings always produce the same plan.
 
 ## Input
 
-Premiere renders the selected dialogue tracks to a PCM16 WAV file that starts at timeline tick zero. The engine reads it natively.
+Premiere renders the selected dialogue tracks as a mono WAV. The analysed range runs from the start of the first selected section to the end of the last one. The engine reads the PCM natively.
 
-## Stage 1: block levels
+## Stage 1: levels
 
-The audio is split into consecutive blocks of `floor(sampleRate / 100)` sample frames, about 10 ms. For every block and every channel the mean square of the samples is computed. The loudest channel wins, so out of phase stereo never looks like silence.
+The analysed range is split into consecutive windows of `max(1, floor(sampleRate / 50))` sample frames, 20 ms at the usual rates. The grid starts at the first sample of the analysed range. A trailing partial window is a value of its own, computed from its own number of frames.
 
-The level of a block is `20 * log10(rms)` in dBFS, unrounded. Digital silence, non finite and non positive values map to the floor of **-100 dBFS**. A trailing partial block is analysed like a full block.
+For every window the RMS is the square root of the mean of the squared samples. With several channels the loudest channel wins; a mono render has one channel.
 
-## Stage 2: audible regions
+The level of a window is `20 * log10(rms)` in dBFS. A non finite, zero or negative RMS and every level below -60 dBFS map to **-60 dBFS**. The level is stored as a 32 bit float and then rounded to two decimals: the exact decimal value of the float is rounded, halves away from zero.
 
-A block is **audible** when its level is greater than or equal to the threshold (`thresholdDb`). Consecutive audible blocks form a region. Every region remembers its peak level.
+Value `i` starts at `i / 50` seconds. The analysed duration is `count / 50` seconds.
 
-## Stage 3: bridge short pauses
+## Stage 2: raw pauses
 
-When the gap between two neighbouring regions is shorter than `minPause`, both regions become one. The peak is the higher of both peaks. Gaps are measured in whole blocks: `round(seconds / blockSeconds)`.
+A value is **quiet** when its level is strictly below the threshold. A level equal to the threshold counts as speech. Every maximal run of quiet values is a raw pause from `first * d` to `next * d` seconds, where `d = 1 / 50`, `first` is the first quiet value and `next` is the first value after the run, or the number of values.
 
-## Stage 4: drop quiet blips
+## Stage 3: edge refinement
 
-A region is removed when it is shorter than `minSpeech` **and** its peak stays below `thresholdDb + 10 dB`. Short regions with a clear peak are speech and stay.
+Each edge of a raw pause moves by at most one value towards the side where the energy of the neighbouring values points, so it lands between the grid points where speech fades into quiet.
 
-Bridging runs before blip removal. A soft word that dips below the threshold for a few milliseconds is therefore judged as one region, not as several blips.
+The power of a level is `P(x) = 10^(x / 10)`. The speech share of a level `x` between a loud reference `L` and a quiet reference `Q` is:
 
-## Stage 5: pauses
+- `1` when `x > Q`, else `0`, if `P(L) <= P(Q)`,
+- otherwise `(P(x) - P(Q)) / (P(L) - P(Q))`, limited to 0 and 1.
 
-The pauses are the gaps between the remaining regions, including the gap before the first region and after the last one. A pause shorter than `minPause` is kept as material.
+Let `a = round(start / d)` and `b = round(end / d)` be the value indices of the raw pause and `v[k]` the level of value `k`, with `k` limited to the valid indices.
 
-Each pause is then shortened so speech keeps some air:
+- **Start**, only when `a > 0`: `L = v[a - 2]`, `Q = v[min(b, a + 1)]`, `r = share(v[a - 1]) + share(v[a])`, new start `(a - 1 + r) * d`.
+- **End**, only when `b` is below the number of values: `L = v[b + 1]`, `Q = v[max(a, b - 2)]`, `r = share(v[b]) + share(v[b - 1])`, new end `(b + 1 - r) * d`.
 
-- `tail` is kept after the preceding speech. It moves the pause start later. A pause at the very start of the audio keeps its start.
-- `leadIn` is kept before the following speech. It moves the pause end earlier. A pause at the very end of the audio keeps its end.
+When a result is not finite or the new start is not before the new end, both edges keep their raw values.
 
-A pause that becomes empty is dropped. All times are clamped to the audio duration. Audio without any region is one pause from zero to the duration.
+## Stage 4: air
+
+Every pause keeps air around speech:
+
+- `tail` is kept after the preceding speech: the start moves later by `tail`, but at most to the analysed duration. A start within 5 ms of 0 stays where it is.
+- `leadIn` is kept before the following speech: the end moves earlier by `leadIn`, but at most to 0. An end within 5 ms of the analysed duration stays where it is.
+
+The pauses are then sorted by start and merged in order: a pause that starts at or before the end of the current merged pause joins it, and the merged end is the later of both ends.
+
+## Stage 5: minimum pause
+
+A pause stays only if its length is at least `max(minPause, 0.05)` seconds. This also drops every pause that the air made empty or negative.
+
+## Stage 6: short speech
+
+Walking from the first pause, as long as the gap between the current pause and the next one is shorter than `max(minSpeech, 0.05)` seconds, the next pause joins the current one: the current end becomes the end of the next pause. Then the minimum pause rule of stage 5 runs once more.
+
+The gap already contains the air of both pauses. A short piece of speech is therefore only cut when the air on both sides together is shorter than `minSpeech`.
+
+## Stage 7: cut spacing
+
+This stage runs only when `minCutSpacing` is greater than 0. Neighbouring pauses whose gap is at most `minCutSpacing` form groups; a group is a chain of neighbours. In every group the longest pause stays uncut and leaves the list; on a tie it is the first of them. The groups are formed again on the shorter list until no group is left.
+
+## Stage 8: sections
+
+The pauses are relative to the start of the analysed range. Every pause is intersected with every selected section: the start is the later of both starts, the end the earlier of both ends, and the piece is kept when its start is not after its end. The pieces are shifted to timeline seconds and sorted by start.
+
+## Planner rules
+
+The planner turns pauses into an integer tick plan:
+
+- A pause start becomes the frame `ceil(start * fps - 0.0001)`, a pause end the frame `floor(end * fps + 0.0001)`. The tolerance is a ten thousandth of a frame. Only pieces whose start frame is before their end frame are cut. There is no further minimum: stage 5 already decides.
+- With the cut scope **selection** every track is cut inside the selected sections, gaps between clips included. With the cut scope **dialogue** only time covered by an enabled clip on a selected dialogue track can be removed.
 
 ## Settings
 
 | Setting | Protocol name | Panel default | Meaning |
 | --- | --- | --- | --- |
-| Threshold | `thresholdDb` | -45 dB | Blocks below this level count as quiet. Valid from -90 to 0 dB. |
-| Minimum pause | `minPause` | 0.16 s | Shorter pauses stay. |
-| Minimum speech | `minSpeech` | 0.16 s | Shorter regions without a clear peak count as noise. |
+| Threshold | `thresholdDb` | -45 dB | Values strictly below this level are quiet. Valid from -90 to 0 dB. At -60 dB or below no pause is found, because levels end at -60 dB. |
+| Minimum pause | `minPause` | 0.16 s | Shortest cut after the air is removed, never under 0.05 s. |
+| Minimum speech | `minSpeech` | 0.16 s | Two cuts whose gap, air included, is shorter than this become one, never under 0.05 s. |
 | Lead-in | `leadIn` | 0.16 s | Air kept before speech. Panel label: "Air before speech". |
 | Tail | `tail` | 0.16 s | Air kept after speech. Panel label: "Air after speech". |
+| Cut spacing | `minCutSpacing` | 0 s (off) | Neighbouring cuts at most this far apart are thinned out, see stage 7. |
 
 All durations are seconds from 0 to 60.
 
-## Planner rules
-
-The planner turns pauses into an integer tick plan. In addition to its safety rules:
-
-- On a rendered timeline, only time covered by an enabled clip on a selected dialogue track can be removed. Quiet b-roll or gaps without dialogue are never cut.
-- Pause starts snap to the next frame boundary and ends to the previous one, so a cut never reaches into kept material.
-- After snapping, a removal shorter than `max(2 frames, 100 ms)` is dropped.
-
 ## Threshold suggestion
 
-"Estimate level automatically" uses only blocks inside the selected range that are covered by an enabled clip on a selected dialogue track.
+"Estimate level automatically" uses the levels of stage 1 whose start time lies inside a selected section, measured from the start of the analysed range. A section ends at the analysed duration at the latest. The levels are split into a quiet and a loud group with two cluster k-means:
 
-1. Blocks at or below -90 dBFS are digital silence from gaps, noise gates or denoisers. They are not room tone and are set aside. Their share of all blocks is the gated share.
-2. Without at least one second of remaining blocks there is no suggestion.
-3. The speech level is the 90th percentile of the remaining blocks. Below -50 dBFS there is no suggestion.
-4. The quiet level is the lowest clear peak of the level histogram: 1 dB bins from -90 to 0 dBFS, smoothed over three bins, the first local maximum from below that holds at least 2 percent of the blocks and lies below the median. Without such a peak the 5th percentile is used.
-5. A recording has a usable quiet level when speech is at least 12 dB above it. Without a usable quiet level but with a gated share of at least 5 percent, the pauses are digital silence and the quiet level is taken as -72 dBFS. Otherwise there is no suggestion.
-6. The lower edge of speech is the 10th percentile of the blocks at least 12 dB above the quiet level.
-7. The suggestion lies halfway between the quiet level and the lower edge of speech, so breaths, reverb tails and mouth noise near the room tone fall below it while soft syllables stay above it. It is at least 6 dB above the quiet level and never above the speech level minus 16 dB (the margin of ITU-T P.56 between active speech and its threshold).
-8. The result is limited to -60 to -20 dB and rounded to 0.1 dB.
+1. The start centres are the lowest and the highest level.
+2. Every level joins the nearer centre; on a tie the quiet one.
+3. Every centre moves to the mean of its group. An empty group keeps its centre.
+4. Steps 2 and 3 repeat until every centre moved by less than 0.0001 of its previous value, at most 50 times. A previous centre of exactly 0 never counts as settled.
+5. The suggestion is the highest level of the quiet group from the last assignment, rounded to whole dB with halves rounded up.
 
-This replaces a fixed percentile, which drifts into speech when pauses are rare and into digital silence when pauses are gated.
+When all levels are equal, the suggestion is that level. Without levels there is no suggestion.

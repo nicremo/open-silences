@@ -388,6 +388,9 @@ pub struct ParametersJson {
     pub min_speech: f64,
     pub lead_in: f64,
     pub tail: f64,
+    /// Optional, 0 when missing: no thinning of close cuts.
+    #[serde(default)]
+    pub min_cut_spacing: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -1518,6 +1521,7 @@ impl PlanRequest {
                 min_speech: snapshot.parameters.min_speech,
                 lead_in: snapshot.parameters.lead_in,
                 tail: snapshot.parameters.tail,
+                min_cut_spacing: snapshot.parameters.min_cut_spacing,
             },
             channel_mode: ChannelMode::parse(&snapshot.channel_mode)?,
             mode: PlanMode::parse(&snapshot.mode)?,

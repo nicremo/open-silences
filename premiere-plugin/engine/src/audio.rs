@@ -79,7 +79,7 @@ impl Default for AnalyzeOptions {
     fn default() -> Self {
         Self {
             channel_mode: ChannelMode::Loudest,
-            values_per_second: crate::level::BLOCKS_PER_SECOND,
+            values_per_second: crate::level::VALUES_PER_SECOND,
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
             stderr_limit: DEFAULT_STDERR_LIMIT,
         }
@@ -106,7 +106,7 @@ pub struct AudioAnalysis {
     pub channels_analyzed: u32,
     pub trailing_samples_ignored: usize,
     pub stream_index: i64,
-    /// One level per window in dBFS, unrounded, floored at `level::FLOOR_DB`.
+    /// One level per window in dBFS, see `level::amplitude_to_db`.
     /// Memory grows with the number of windows.
     pub db_values: Vec<f64>,
     /// Unrounded RMS values, for tests and diagnostics.
@@ -569,6 +569,19 @@ pub fn analyze_native_wav(
     options: &AnalyzeOptions,
     cancel: &CancelToken,
 ) -> Result<(AudioInfo, AudioAnalysis), String> {
+    analyze_native_wav_range(file, options, None, cancel)
+}
+
+/// Like `analyze_native_wav`, restricted to `[start, end)` seconds of the
+/// render. The value grid starts at the first sample of the range and the
+/// reported duration is the duration of the range. `AudioInfo::duration` stays
+/// the duration of the whole file.
+pub fn analyze_native_wav_range(
+    file: &str,
+    options: &AnalyzeOptions,
+    range: Option<(f64, f64)>,
+    cancel: &CancelToken,
+) -> Result<(AudioInfo, AudioAnalysis), String> {
     use std::io::{Read, Seek, SeekFrom};
     let started = std::time::Instant::now();
     let run = || -> Result<(AudioInfo, AudioAnalysis), String> {
@@ -657,22 +670,37 @@ pub fn analyze_native_wav(
             return Err("WAV data does not contain complete sample frames".to_string());
         }
         let frames = size / align as u64;
+        let (first_frame, end_frame) = match range {
+            None => (0, frames),
+            Some((start, end)) => {
+                if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start {
+                    return Err("invalid analysis range".to_string());
+                }
+                let first = ((start * rate as f64).round() as u64).min(frames);
+                let last = ((end * rate as f64).round() as u64).min(frames);
+                if last <= first {
+                    return Err("the analysis range lies outside the render".to_string());
+                }
+                (first, last)
+            }
+        };
+        let analysed = end_frame - first_frame;
         let window = ((rate as f64 / options.values_per_second).floor() as usize).max(1);
         let effective = rate as f64 / window as f64;
         if (effective - options.values_per_second).abs() / options.values_per_second > 0.1 {
             return Err("native WAV resolution deviates too much".to_string());
         }
-        if frames.div_ceil(window as u64) > 2_000_000 {
+        if analysed.div_ceil(window as u64) > 2_000_000 {
             return Err("native WAV exceeds the analysis memory limit".to_string());
         }
         input
-            .seek(SeekFrom::Start(body))
+            .seek(SeekFrom::Start(body + first_frame * align as u64))
             .map_err(|e| e.to_string())?;
         let mut sums = vec![0.0; channels as usize];
         let (mut frame_index, mut in_window, mut total) = (0usize, 0usize, 0u64);
         let mut rms = Vec::new();
         let mut buffer = [0u8; 65536];
-        let mut remaining = size;
+        let mut remaining = analysed * align as u64;
         while remaining > 0 {
             if cancel.is_cancelled() {
                 return Err("native WAV analysis cancelled".to_string());
@@ -703,6 +731,7 @@ pub fn analyze_native_wav(
             rms.push(window_rms_of(&sums, in_window, channels as usize));
         }
         let duration = frames as f64 / rate as f64;
+        let analysed_duration = analysed as f64 / rate as f64;
         let db_values = rms.iter().map(|r| amplitude_to_db(*r)).collect();
         Ok((
             AudioInfo {
@@ -716,8 +745,8 @@ pub fn analyze_native_wav(
                 requested_values_per_second: options.values_per_second,
                 value_duration_sec: window as f64 / rate as f64,
                 window_frames: window,
-                duration_sec: duration,
-                decoded_duration_sec: duration,
+                duration_sec: analysed_duration,
+                decoded_duration_sec: analysed_duration,
                 channels_analyzed: channels,
                 trailing_samples_ignored: 0,
                 stream_index: 0,
@@ -1065,6 +1094,7 @@ mod tests {
                 min_speech: 0.2,
                 lead_in: 0.2,
                 tail: 0.2,
+                min_cut_spacing: 0.0,
             },
         );
         // The gate is a 4 s tone followed by 1 s of silence, repeating, so the
@@ -1143,6 +1173,7 @@ mod tests {
                     min_speech: 0.2,
                     lead_in: 0.2,
                     tail: 0.2,
+                    min_cut_spacing: 0.0,
                 },
             );
             intervals.push(pauses);
