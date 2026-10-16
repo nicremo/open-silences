@@ -85,7 +85,7 @@ open-silences preview --json
 open-silences cut --yes --json
 ```
 
-Defaults: entire timeline, track A1, -46 dB and the Standard pacing. Setup and all options: [docs/CLI.md](docs/CLI.md).
+Defaults: entire timeline, track A1, -45 dB and the Standard pacing. Setup and all options: [docs/CLI.md](docs/CLI.md).
 
 ### Build from source
 

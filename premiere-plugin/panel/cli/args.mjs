@@ -1,11 +1,11 @@
 /**
  * Command line arguments of open-silences. Defaults follow the panel's
- * Standard pacing: entire timeline, A1, four times 160 ms, with -46 dB.
+ * Standard pacing: entire timeline, A1, four times 160 ms, with the panel's noise floor.
  */
 import {parseArgs} from 'node:util';
-import {PRESETS, TIMING_FIELDS} from '../js/workflow.js';
+import {DEFAULT_SETTINGS, PRESETS, TIMING_FIELDS} from '../js/workflow.js';
 
-export const CLI_DEFAULTS = Object.freeze({scope:'entire', tracks:['A1'], threshold:-46, preset:'standard', cutScope:'selection'});
+export const CLI_DEFAULTS = Object.freeze({scope:'entire', tracks:['A1'], threshold:DEFAULT_SETTINGS.threshold, preset:'standard', cutScope:'selection'});
 export const PRESET_NAMES = Object.freeze({standard:'mine', calm:'calm', relaxed:'measured', fluid:'paced', energetic:'energetic', tight:'jumpy'});
 const COMMANDS = ['status', 'sequence', 'estimate', 'preview', 'cut'];
 const SCOPES = ['entire', 'inout', 'selected'];
@@ -24,10 +24,10 @@ Commands:
   preview    Analyse and report the cuts, change nothing (no backup)
   cut        Backup, analyse, cut and verify. Requires --yes
 
-Options (defaults: entire timeline, A1, -46 dB, Standard pacing):
+Options (defaults: entire timeline, A1, ${CLI_DEFAULTS.threshold} dB, Standard pacing):
   --scope entire|inout|selected   Range (default entire)
   --tracks A1[,A2]                Analysis tracks (default A1)
-  --threshold <dB>|auto           Noise floor -60..0 (default -46), auto estimates first
+  --threshold <dB>|auto           Noise floor -60..0 (default ${CLI_DEFAULTS.threshold}), auto estimates first
   --preset standard|calm|relaxed|fluid|energetic|tight   Pacing (default standard)
   --min-pause <ms> --min-speech <ms> --lead-in <ms> --tail <ms>   Override one timing
   --min-cut-spacing <ms>          Thin out cuts at most this far apart (default 0, off)

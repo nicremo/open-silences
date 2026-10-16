@@ -30,13 +30,13 @@ All commands work on the active sequence in Premiere.
 
 ## Defaults
 
-The defaults follow the panel's Standard pacing: entire timeline, track A1, cuts from 160 ms, speech from 160 ms, 160 ms before and after speech, every track cut inside the range, backup and readback on. The noise floor default is -46 dB, one step below the panel's -45 dB start value. Use `--threshold auto` to measure it per recording.
+The defaults follow the panel's Standard pacing: entire timeline, track A1, cuts from 160 ms, speech from 160 ms, 160 ms before and after speech, every track cut inside the range, backup and readback on. The noise floor default is -45 dB, the same start value as in the panel. Use `--threshold auto` to measure it per recording.
 
 | Option | Default | Values |
 | --- | --- | --- |
 | `--scope` | `entire` | `entire`, `inout`, `selected` |
 | `--tracks` | `A1` | comma separated, e.g. `A1,A2` |
-| `--threshold` | `-46` | -60 to 0, or `auto` |
+| `--threshold` | `-45` | -60 to 0, or `auto` |
 | `--preset` | `standard` | `standard`, `calm`, `relaxed`, `fluid`, `energetic`, `tight` |
 | `--min-pause`, `--min-speech`, `--lead-in`, `--tail` | from preset | 0 to 10000 ms |
 | `--min-cut-spacing` | `0` (off) | 0 to 10000 ms |

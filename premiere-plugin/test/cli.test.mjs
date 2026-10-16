@@ -42,21 +42,27 @@ test('engine path: flag first, then environment, else an error',()=>{
   assert.throws(() => resolveEnginePath({flag:'/missing/engine', env:{}}), /not found/);
 });
 
-import {parseCliArgs, UsageError, CLI_DEFAULTS} from '../panel/cli/args.mjs';
+import {parseCliArgs, UsageError, CLI_DEFAULTS, USAGE} from '../panel/cli/args.mjs';
+import {DEFAULT_SETTINGS} from '../panel/js/workflow.js';
 
-test('defaults are entire timeline, A1, -46 dB and the Standard pacing',()=>{
+test('defaults are entire timeline, A1, -45 dB and the Standard pacing',()=>{
   const parsed = parseCliArgs(['preview']);
   assert.equal(parsed.command, 'preview');
   assert.deepEqual(parsed.config, {scope:'entire', analysisTracks:[{kind:'audio', index:0}], cutScope:'selection',
-    settings:{threshold:-46, minPause:160, minSpeech:160, leadIn:160, tail:160, minCutSpacing:0},
+    settings:{threshold:-45, minPause:160, minSpeech:160, leadIn:160, tail:160, minCutSpacing:0},
     safety:{backup:true, verifyMix:false, readback:true}});
   assert.equal(parsed.autoThreshold, false);
   assert.equal(parsed.yes, false);
-  assert.equal(CLI_DEFAULTS.threshold, -46);
+  assert.equal(CLI_DEFAULTS.threshold, -45);
+});
+test('the CLI starts with the noise floor of the panel and says so in its help',()=>{
+  assert.equal(CLI_DEFAULTS.threshold, DEFAULT_SETTINGS.threshold);
+  assert.match(USAGE, /A1, -45 dB, Standard pacing/);
+  assert.match(USAGE, /\(default -45\), auto estimates first/);
 });
 test('presets, single timing overrides, tracks, scope and auto threshold',()=>{
   const parsed = parseCliArgs(['cut','--yes','--preset','calm','--tail','90','--tracks','A1,a3','--scope','inout','--threshold','auto','--json']);
-  assert.deepEqual(parsed.config.settings, {threshold:-46, minPause:500, minSpeech:500, leadIn:500, tail:90, minCutSpacing:0});
+  assert.deepEqual(parsed.config.settings, {threshold:-45, minPause:500, minSpeech:500, leadIn:500, tail:90, minCutSpacing:0});
   assert.deepEqual(parsed.config.analysisTracks, [{kind:'audio', index:0}, {kind:'audio', index:2}]);
   assert.equal(parsed.config.scope, 'inout');
   assert.equal(parsed.autoThreshold, true);
@@ -119,9 +125,9 @@ test('preview reports the cuts with the standard settings and changes nothing',a
   const out = await runCli(['preview','--json'], fake);
   assert.equal(out.code, EXIT.ok, out.stderr);
   assert.deepEqual(out.json(), {ok:true, cutCount:1, removedSeconds:1, rangeSeconds:10, skipped:{count:0, reasons:[]}, noiseFloorEstimated:false,
-    settings:{threshold:-46, minPause:160, minSpeech:160, leadIn:160, tail:160, minCutSpacing:0}});
+    settings:{threshold:-45, minPause:160, minSpeech:160, leadIn:160, tail:160, minCutSpacing:0}});
   assert.equal(fake.calls.includes('prepareCut'), false);
-  assert.equal(fake.snapshots[0].snapshot.parameters.thresholdDb, -46);
+  assert.equal(fake.snapshots[0].snapshot.parameters.thresholdDb, -45);
 });
 test('threshold auto estimates first and uses the estimate',async()=>{
   const fake = fakeHost();
