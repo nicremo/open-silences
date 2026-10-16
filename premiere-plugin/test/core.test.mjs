@@ -10,6 +10,7 @@ import {
   applyWorkflow,
   findExactItemIndex,
   hostScriptFor,
+  scriptString,
   interpretHostReply,
   fingerprintTracks,
   preflightPlan,
@@ -27,6 +28,9 @@ import {
   safetyFlagFromHost,
   subtractTicks,
   summarizePlan,
+  summarizeSkipped,
+  planBatches,
+  verifyCutReadback,
   ticksPerFrameFor,
   ticksToSeconds,
   timeRemapFlagFromComponents,
@@ -744,6 +748,18 @@ test('host scripts encode string arguments exactly once', () => {
   assert.throws(() => hostScriptFor('unknown', {}), /Unknown host call/);
 });
 
+test('fingerprints travel as separate strings after the payload, never inside it', () => {
+  const items = '{"ok":true,"tracks":[{"name":"a\u2028b"}]}';
+  for (const name of ['prepareCut', 'renderAudio', 'applyBatch']) {
+    const script = hostScriptFor(name, { expectedIdentity: 'doc:seq', expectedItemFingerprint: items, expectedStateFingerprint: 'state' });
+    assert.equal(script.includes('\u2028'), false, 'line separators are escaped for ExtendScript');
+    const args = JSON.parse(`[${script.slice(script.indexOf('(') + 1, -1)}]`);
+    assert.deepEqual(args, [JSON.stringify({ expectedIdentity: 'doc:seq' }), items, 'state']);
+  }
+  const bare = JSON.parse(`[${hostScriptFor('applyBatch', { expectedIdentity: 'x' }).slice('OS_applyBatch('.length, -1)}]`);
+  assert.deepEqual(bare, ['{"expectedIdentity":"x"}', '', '']);
+  assert.equal(scriptString('a\u2029b'), '"a\\u2029b"');
+});
 test('workflow stops before cloning when the read fails', async () => {
   const mocks = hostMocks({ readFails: true });
   const result = await applyWorkflow({ ...mocks });
@@ -842,4 +858,94 @@ test('native partitions preserve speed-dependent source ranges and reject missin
   const wrong=structuredClone(split);wrong[0].items[1].projectItemId='other';
   assert.ok(verifyNativePartitions(original,wrong).length);
   assert.throws(()=>expectedAfterNativeCuts({tracks:original,intervals:[{startTicks:'20',endTicks:'40'}]}),/overlaps/);
+});
+
+test('transition ranges reach the engine exactly, an unreadable list stays null', () => {
+  const tracks = baseTracks();
+  tracks[0].transitionSpans = [{ startTicks: '10000000000000001', endTicks: 10160640000 * 30 }];
+  const snapshot = buildSnapshot({
+    sequence: baseSequence,
+    tracks,
+    analysisTracks: [{ kind: 'audio', index: 0 }],
+    parameters: { thresholdDb: -35, minPause: 0.3, minSpeech: 0.2, leadIn: 0.2, tail: 0.2 },
+    channelMode: 'loudest'
+  });
+  assert.deepEqual(snapshot.tracks[0].transitionSpans, [{ startTicks: '10000000000000001', endTicks: '304819200000' }]);
+  tracks[0].transitionSpans = null;
+  const unknown = buildSnapshot({
+    sequence: baseSequence, tracks, analysisTracks: [{ kind: 'audio', index: 0 }],
+    parameters: { thresholdDb: -35, minPause: 0.3, minSpeech: 0.2, leadIn: 0.2, tail: 0.2 }, channelMode: 'loudest'
+  });
+  assert.equal(unknown.tracks[0].transitionSpans, null);
+  delete tracks[0].transitionSpans;
+  const legacy = buildSnapshot({
+    sequence: baseSequence, tracks, analysisTracks: [{ kind: 'audio', index: 0 }],
+    parameters: { thresholdDb: -35, minPause: 0.3, minSpeech: 0.2, leadIn: 0.2, tail: 0.2 }, channelMode: 'loudest'
+  });
+  assert.equal('transitionSpans' in legacy.tracks[0], false);
+});
+
+test('skipped ranges are counted per reason, the most frequent first', () => {
+  const plan = { intervals: [], skipped: [
+    { reason: 'lockedTrack' }, { reason: 'transition' }, { reason: 'transition' }, { reason: 'somethingNew' }
+  ] };
+  assert.deepEqual(summarizeSkipped(plan), { count: 4, reasons: [
+    { reason: 'transition', count: 2 }, { reason: 'unsupportedClip', count: 1 }, { reason: 'lockedTrack', count: 1 }
+  ] });
+  assert.deepEqual(summarizeSkipped({ intervals: [] }), { count: 0, reasons: [] });
+  assert.equal(summarizePlan(plan).skipped.count, 4);
+});
+
+test('a cut is one pause, its pieces between clip boundaries do not count twice', () => {
+  const plan = { cuts: [{}, {}], intervals: [
+    { startTicks: '0', endTicks: '10' }, { startTicks: '10', endTicks: '20' }, { startTicks: '30', endTicks: '40' }
+  ] };
+  assert.equal(summarizePlan(plan).cutCount, 2);
+  assert.equal(summarizePlan({ intervals: plan.intervals }).cutCount, 3);
+});
+
+test('cut scope and cut spacing reach the engine only when given', () => {
+  const base = {
+    sequence: baseSequence, tracks: baseTracks(), analysisTracks: [{ kind: 'audio', index: 0 }],
+    parameters: { thresholdDb: -35, minPause: 0.3, minSpeech: 0.2, leadIn: 0.2, tail: 0.2 }, channelMode: 'loudest'
+  };
+  const legacy = buildSnapshot(base);
+  assert.equal('cutScope' in legacy, false);
+  assert.equal('minCutSpacing' in legacy.parameters, false);
+  const chosen = buildSnapshot({ ...base, cutScope: 'selection', parameters: { ...base.parameters, minCutSpacing: 1 } });
+  assert.equal(chosen.cutScope, 'selection');
+  assert.equal(chosen.parameters.minCutSpacing, 1);
+});
+
+test('batches hold whole cuts from the end of the timeline with their removals', () => {
+  const piece = (start, end, cut) => ({ startTicks: String(start), endTicks: String(end), cut });
+  const plan = {
+    intervals: [piece(0, 10, 0), piece(10, 20, 0), piece(30, 40, 1), piece(50, 60, 2), piece(70, 80, 3), piece(90, 95, 4)],
+    removals: [{ trackKind: 'video', trackIndex: 0, startTicks: '10', endTicks: '20', ripple: true },
+      { trackKind: 'audio', trackIndex: 0, startTicks: '10', endTicks: '20', ripple: false }]
+  };
+  const batches = planBatches(plan, 2);
+  assert.deepEqual(batches.map(b => b.cutCount), [2, 2, 1]);
+  assert.deepEqual(batches.map(b => b.intervals.map(i => i.cut)), [[4, 3], [2, 1], [0, 0]]);
+  assert.equal(batches[2].removals.length, 2);
+  assert.equal(batches[0].removals.length, 0);
+});
+
+test('the readback after a batched cut predicts sources only at normal speed', () => {
+  const second = 254016000000;
+  const item = (speed, sourceOut) => ({ startTicks: '0', endTicks: String(10 * second), sourceInTicks: '0',
+    sourceOutTicks: String(sourceOut), mediaPath: '/a.mov', projectItemId: 'a', disabled: false, speed });
+  const cut = [{ startTicks: String(2 * second), endTicks: String(3 * second) }];
+  const after = (speed, sources) => [{ kind: 'video', index: 0, items: [
+    { startTicks: '0', endTicks: String(2 * second), sourceInTicks: '0', sourceOutTicks: String(sources[0]), mediaPath: '/a.mov', projectItemId: 'a', disabled: false, speed },
+    { startTicks: String(2 * second), endTicks: String(9 * second), sourceInTicks: String(sources[1]), sourceOutTicks: String(sources[2]), mediaPath: '/a.mov', projectItemId: 'a', disabled: false, speed }
+  ] }];
+  const fast = [{ kind: 'video', index: 0, items: [item(2, 20 * second)] }];
+  assert.deepEqual(verifyCutReadback({ before: fast, intervals: cut, after: after(2, [4 * second, 6 * second, 20 * second]) }), []);
+  const normal = [{ kind: 'video', index: 0, items: [item(1, 10 * second)] }];
+  assert.deepEqual(verifyCutReadback({ before: normal, intervals: cut, after: after(1, [2 * second, 3 * second, 10 * second]) }), []);
+  assert.ok(verifyCutReadback({ before: normal, intervals: cut, after: after(1, [2 * second, 4 * second, 10 * second]) }).length > 0);
+  const shifted = after(1, [2 * second, 3 * second, 10 * second]);
+  shifted[0].items[1].startTicks = String(3 * second);
+  assert.ok(verifyCutReadback({ before: normal, intervals: cut, after: shifted }).length > 0);
 });

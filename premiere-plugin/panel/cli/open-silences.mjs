@@ -15,6 +15,23 @@ import {createEngineRunner, resolveEnginePath} from './engine-runner.mjs';
 
 export const EXIT = Object.freeze({ok:0, failed:1, usage:2, bridge:3, unknown:4});
 
+/** Engine reason codes in words, for terminal output. */
+const SKIP_TEXT = Object.freeze({
+  transition:'a transition lies inside the range',
+  unsupportedClip:'a clip has a state that cannot be cut safely',
+  lockedTrack:'a locked track would have to move',
+  noWritableClip:'no unlocked clip covers the range',
+  unanalysedClip:'a clip could not be analysed',
+  noWritableTrack:'no unlocked track covers the range'
+});
+
+/** One line about uncut ranges, or nothing. */
+export function skippedLine(skipped) {
+  if (!skipped?.count) return [];
+  const reasons = skipped.reasons.map(entry => `${entry.count} x ${SKIP_TEXT[entry.reason] ?? entry.reason}`).join(', ');
+  return [`${skipped.count} ${skipped.count === 1 ? 'range stays' : 'ranges stay'} uncut: ${reasons}.`];
+}
+
 export async function main(argv, deps = {}) {
   const stdout = deps.stdout ?? process.stdout;
   const stderr = deps.stderr ?? process.stderr;
@@ -114,15 +131,15 @@ export async function main(argv, deps = {}) {
       const result = await workflow.run(config, 'preview');
       if (!result?.ok) throw Error(lastError ?? 'The preview failed.');
       const out = {ok:true, ...result.preview, settings:config.settings, noiseFloorEstimated};
-      report(out, [`${out.cutCount} cuts, ${out.removedSeconds.toFixed(2)} s of ${out.rangeSeconds.toFixed(2)} s would be removed.`]);
+      report(out, [`${out.cutCount} cuts, ${out.removedSeconds.toFixed(2)} s of ${out.rangeSeconds.toFixed(2)} s would be removed.`, ...skippedLine(out.skipped)]);
       return EXIT.ok;
     }
     const result = await workflow.run(config, 'full');
     if (!result?.ok) return fail(Error(lastError ?? 'The cut failed.'), backupName ? {backupName} : {});
     const summary = result.summary ?? {cutCount:0, removedSeconds:0};
-    const out = {ok:true, cutCount:summary.cutCount, removedSeconds:summary.removedSeconds, backupName:result.backup.backupName,
-      settings:config.settings, noiseFloorEstimated};
-    report(out, [`${out.cutCount} cuts, ${out.removedSeconds.toFixed(2)} s removed.`, `Backup: ${out.backupName}`]);
+    const out = {ok:true, cutCount:summary.cutCount, removedSeconds:summary.removedSeconds, backupName:result.backup?.backupName ?? null,
+      skipped:summary.skipped ?? {count:0, reasons:[]}, settings:config.settings, noiseFloorEstimated};
+    report(out, [`${out.cutCount} cuts, ${out.removedSeconds.toFixed(2)} s removed.`, ...skippedLine(out.skipped), out.backupName ? `Backup: ${out.backupName}` : 'No backup.']);
     return EXIT.ok;
   } catch (error) {
     return fail(error, backupName ? {backupName} : {});

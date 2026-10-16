@@ -1,20 +1,22 @@
 import {
-  assessCapabilities, buildSnapshot, validatePlan, preflightPlan,
-  verifyNativePartitions, expectedAfterNativeCuts, verifyReadback, summarizePlan
+  assessCapabilities, buildSnapshot, validatePlan, preflightPlan, planBatches, verifyCutReadback, summarizePlan
 } from './core.js';
 import {createTranslator} from './i18n.js';
 
 const ENGLISH = createTranslator('en');
 
-export const DEFAULT_SETTINGS = Object.freeze({threshold:-45, minPause:160, minSpeech:160, leadIn:160, tail:160});
+export const DEFAULT_SETTINGS = Object.freeze({threshold:-45, minPause:160, minSpeech:160, leadIn:160, tail:160, minCutSpacing:0});
+// Optional protection around a cut: backup sequence, second render of the mix
+// right before the cut, readback of every surviving clip after it.
+export const DEFAULT_SAFETY = Object.freeze({backup:true, verifyMix:false, readback:true});
 // Timing presets in milliseconds: [minPause, minSpeech, leadIn, tail]. Names: preset.<key>.
 export const PRESETS = Object.freeze({
   mine: {values:[160,160,160,160]},
-  calm: {values:[600,160,220,300]},
-  measured: {values:[400,160,180,240]},
-  paced: {values:[260,160,160,180]},
-  energetic: {values:[160,120,100,120]},
-  jumpy: {values:[100,80,60,80]}
+  calm: {values:[500,500,500,500]},
+  measured: {values:[350,350,350,350]},
+  paced: {values:[200,200,200,200]},
+  energetic: {values:[100,100,100,100]},
+  jumpy: {values:[50,50,50,50]}
 });
 export const TIMING_FIELDS = Object.freeze(['minPause','minSpeech','leadIn','tail']);
 const TPS = 254016000000n;
@@ -58,13 +60,21 @@ export function settingsToParameters(values, t = ENGLISH) {
     if (!Number.isFinite(value) || value < 0 || value > 10000) throw Error(t('error.timings'));
     result[field] = value / 1000;
   }
+  // Optional: 0 or missing switches the thinning of close cuts off.
+  const spacing = Number(values.minCutSpacing ?? 0);
+  if (!Number.isFinite(spacing) || spacing < 0 || spacing > 10000) throw Error(t('error.timings'));
+  result.minCutSpacing = spacing / 1000;
   return result;
 }
 
+/** A sequence read this recently is reused by the next run instead of read again. */
+export const FRESH_READ_MS = 1000;
+
 /** One protected user action: validate, backup, render, plan, cut, read back. */
-export function createWorkflow({host, engine, ui, t = ENGLISH}) {
+export function createWorkflow({host, engine, ui, t = ENGLISH, now = () => Date.now()}) {
   let running = false;
   let sequence = null;
+  let lastRead = null;
   let cancelled = false;
   const take = async(name,payload) => {
     const reply = await host(name,payload);
@@ -74,7 +84,9 @@ export function createWorkflow({host, engine, ui, t = ENGLISH}) {
   const checkCancelled = () => { if (cancelled) throw Error(t('error.cancelled')); };
   async function refresh() {
     if (running) return null;
-    const reply = await take('readSequence'); sequence = reply.parsed; return sequence;
+    const reply = await take('readSequence');
+    sequence = reply.parsed; lastRead = {reply, at:now()};
+    return sequence;
   }
   async function run(config, mode = 'full') {
     if (running) return null;
@@ -82,12 +94,16 @@ export function createWorkflow({host, engine, ui, t = ENGLISH}) {
     const estimateOnly = mode === true || mode === 'estimate';
     const previewOnly = mode === 'preview';
     running = true; cancelled = false;
+    const safety = {...DEFAULT_SAFETY, ...(config.safety || {})};
     let backup = null, cutting = false;
     ui.busy(true, t('status.check'), true, 'check');
     try {
       if (!sequence) throw Error(t('error.noSequence'));
       const previousIdentity = sequence.identity;
-      const fresh = await take('readSequence');
+      // A read from just before the run is reused; every later run reads again.
+      const reuse = lastRead && now() - lastRead.at <= FRESH_READ_MS;
+      const fresh = reuse ? lastRead.reply : await take('readSequence');
+      lastRead = null;
       if (fresh.parsed.identity !== previousIdentity) throw Error(t('error.sequenceChanged'));
       sequence = fresh.parsed;
       const sections = resolveSections(sequence, config.scope, t);
@@ -103,27 +119,28 @@ export function createWorkflow({host, engine, ui, t = ENGLISH}) {
       const original = await take('readItems');
       if (original.parsed.identity !== sequence.identity) throw Error(t('error.sequenceChanged'));
       checkCancelled();
-      if (!estimateOnly && !previewOnly) {
+      if (!estimateOnly && !previewOnly && safety.backup) {
         ui.busy(true, t('status.backup'), false, 'backup');
-        backup = (await take('prepareCut', {expectedIdentity:sequence.identity, expectedStateFingerprint:fresh.raw, expectedItemFingerprint:original.raw})).parsed;
-        const backupRead = await take('readItemsOfSequence', {sequenceId:backup.backupId});
-        if (backupRead.raw !== backup.backupItems || JSON.stringify(backupRead.parsed.tracks) !== JSON.stringify(original.parsed.tracks)) throw Error(t('error.backupUnverified'));
+        // The host compared its copy with this fingerprint; the tracks are checked once more here.
+        backup = (await take('prepareCut', {expectedIdentity:sequence.identity, expectedItemFingerprint:original.raw})).parsed;
+        if (JSON.stringify(JSON.parse(backup.backupItems).tracks) !== JSON.stringify(original.parsed.tracks)) throw Error(t('error.backupUnverified'));
         ui.backup(backup.backupName);
       }
       checkCancelled();
-      const state = await take('readSequence');
-      if (state.parsed.identity !== original.parsed.identity) throw Error(t('error.sequenceChanged'));
-      const current = await take('readItems');
-      if (current.raw !== original.raw) throw Error(t('error.timelineChangedBackup'));
+      // The backup leaves the state of the sequence as it was, so the first read
+      // stays the reference. The first batch checks state and items right before
+      // its first cut, everything in between only reads.
+      const state = fresh;
       const tracks = state.parsed.tracks.map(t => ({...t, role:analysisTracks.some(ref => ref.kind === t.kind && ref.index === t.index) ? 'dialogue' : 'other'}));
-      const renderPayload = {expectedIdentity:state.parsed.identity, expectedStateFingerprint:state.raw, expectedItemFingerprint:original.raw, analysisTracks};
+      const renderPayload = {expectedIdentity:state.parsed.identity, analysisTracks};
       async function analyze(verifying = false) {
         const renderText = t(verifying ? 'status.verifyMix' : estimateOnly ? 'status.estimate' : 'status.audio');
         ui.busy(true, renderText, false, verifying ? 'verify' : 'audio');
         const render = (await take('renderAudio', {...renderPayload, outputPath:engine.renderPath()})).parsed;
         checkCancelled(); ui.busy(true, t(verifying ? 'status.verifyMix' : 'status.detect'), true, verifying ? 'verify' : 'detect');
         const snapshot = buildSnapshot({sequence:{...state.parsed, startTicks:'0'}, tracks, analysisTracks, parameters,
-          selectedSections:sections, renderedMixdown:{mediaPath:render.mediaPath, analysisTracks}, channelMode:'loudest'});
+          selectedSections:sections, renderedMixdown:{mediaPath:render.mediaPath, analysisTracks}, channelMode:'loudest',
+          cutScope:config.cutScope === 'dialogue' ? 'dialogue' : 'selection'});
         const result = await engine.run(snapshot, {estimate:estimateOnly});
         checkCancelled();
         if (!result.ok) throw Error(result.error);
@@ -141,45 +158,61 @@ export function createWorkflow({host, engine, ui, t = ENGLISH}) {
       const rangeSeconds = sections.reduce((sum, range) => sum + seconds((BigInt(range.endTicks) - BigInt(range.startTicks)).toString()), 0);
       const preview = summarizePlan(plan);
       if (previewOnly) {
-        return {ok:true, preview:{cutCount:preview.cutCount, removedSeconds:preview.removedSeconds, rangeSeconds}, plan};
+        return {ok:true, preview:{cutCount:preview.cutCount, removedSeconds:preview.removedSeconds, rangeSeconds, skipped:preview.skipped}, plan};
       }
       if (!plan.intervals.length) {
-        ui.complete({cutCount:0, removedSeconds:0, backupName:backup.backupName});
-        return {ok:true, backup, plan};
+        ui.complete({cutCount:0, removedSeconds:0, backupName:backup?.backupName ?? null, skipped:preview.skipped});
+        return {ok:true, backup, plan, summary:preview};
       }
       // The user sees what will happen before anything is cut.
       checkCancelled();
-      const approved = await ui.confirm({cutCount:preview.cutCount, removedSeconds:preview.removedSeconds, rangeSeconds});
+      const approved = await ui.confirm({cutCount:preview.cutCount, removedSeconds:preview.removedSeconds, rangeSeconds, skipped:preview.skipped});
       if (!approved) {
-        ui.complete({cutCount:0, removedSeconds:0, backupName:backup.backupName, declined:true});
+        ui.complete({cutCount:0, removedSeconds:0, backupName:backup?.backupName ?? null, declined:true, skipped:preview.skipped});
         return {ok:true, declined:true, backup, plan};
       }
       checkCancelled();
-      // A second native render checks mixer state that has no public reader.
-      const checked = await analyze(true);
-      const operations = p => JSON.stringify({intervals:p.intervals, removals:p.removals, razorPoints:p.razorPoints, delta:p.expectedDurationDeltaTicks});
-      if (operations(plan) !== operations(checked.plan)) throw Error(t('error.mixChanged'));
-      const before = await take('readItems');
-      const latest = await take('readSequence');
-      if (before.raw !== original.raw || latest.raw !== state.raw) throw Error(t('error.timelineChanged'));
-      const preflight = preflightPlan({tracks:before.parsed.tracks, intervals:plan.intervals});
+      if (safety.verifyMix) {
+        // A second native render checks mixer state that has no public reader.
+        const checked = await analyze(true);
+        const operations = p => JSON.stringify({intervals:p.intervals, removals:p.removals, razorPoints:p.razorPoints, delta:p.expectedDurationDeltaTicks});
+        if (operations(plan) !== operations(checked.plan)) throw Error(t('error.mixChanged'));
+      }
+      const preflight = preflightPlan({tracks:original.parsed.tracks, intervals:plan.intervals});
       if (preflight.length) throw Error(preflight.join(' '));
-      checkCancelled(); cutting = true;
-      ui.busy(true, t('status.cut'), false, 'cut');
-      // 'ripple' restores the previous assembly with one ripple delete per pause.
-      const applied = await take('apply', {plan, assembly:'shift', expectedOriginalId:backup.backupId, expectedOriginalFingerprint:backup.backupItems,
-        expectedCloneIdentity:state.parsed.identity, expectedCloneFingerprint:before.raw, expectedStateFingerprint:latest.raw, nativeTimeline:true});
-      const partitionProblems = verifyNativePartitions(before.parsed.tracks, applied.parsed.beforeRemovalTracks);
-      if (partitionProblems.length) throw Error(partitionProblems.join(' '));
-      const expected = expectedAfterNativeCuts({tracks:applied.parsed.beforeRemovalTracks, intervals:plan.intervals});
-      const after = await take('readItems');
-      if (after.parsed.identity !== state.parsed.identity) throw Error(t('error.readbackSwitched'));
-      const problems = verifyReadback({expected, actual:after.parsed.tracks});
-      if (problems.length) throw Error(problems.join(' '));
-      const backupAfter = await take('readItemsOfSequence', {sequenceId:backup.backupId});
-      if (backupAfter.raw !== backup.backupItems) throw Error(t('error.backupChanged'));
+      checkCancelled();
+      // Batches of cuts from the end of the timeline towards the start. A cancel
+      // takes effect between two batches, a running batch always finishes. The
+      // first batch compares items and state with the reads above inside the
+      // same host call as its first cut, so nothing can change in between.
+      const batches = planBatches(plan);
+      let done = 0;
+      for (let index = 0; index < batches.length; index++) {
+        if (cancelled) throw Error(t('error.cancelledPartial', {done, total:preview.cutCount}));
+        ui.busy(true, t('status.cutProgress', {done, total:preview.cutCount}), true, 'cut');
+        cutting = true;
+        const reply = await host('applyBatch', {expectedIdentity:state.parsed.identity,
+          ...(index === 0 ? {expectedItemFingerprint:original.raw, expectedStateFingerprint:state.raw} : {}),
+          intervals:batches[index].intervals, removals:batches[index].removals});
+        if (!reply?.ok) {
+          // Code changed comes from the checks before the first cut of the run.
+          if (reply?.code === 'changed') { cutting = index > 0; throw Error(t('error.timelineChanged')); }
+          throw Error(reply?.error || t('error.host'));
+        }
+        done += batches[index].cutCount;
+      }
+      if (safety.readback) {
+        const after = await take('readItems');
+        if (after.parsed.identity !== state.parsed.identity) throw Error(t('error.readbackSwitched'));
+        const problems = verifyCutReadback({before:original.parsed.tracks, intervals:plan.intervals, after:after.parsed.tracks});
+        if (problems.length) throw Error(problems.join(' '));
+      }
+      if (backup) {
+        const backupAfter = await take('readItemsOfSequence', {sequenceId:backup.backupId});
+        if (backupAfter.raw !== backup.backupItems) throw Error(t('error.backupChanged'));
+      }
       const summary = summarizePlan(plan);
-      ui.complete({...summary, backupName:backup.backupName});
+      ui.complete({...summary, backupName:backup?.backupName ?? null});
       return {ok:true, backup, plan, summary};
     } catch (error) {
       const message = `${error.message}${backup ? t('error.withBackup', {name:backup.backupName}) : ''}${cutting ? t('error.notConfirmed') : ''}`;

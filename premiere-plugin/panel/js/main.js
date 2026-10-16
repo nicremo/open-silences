@@ -1,5 +1,5 @@
 import {interpretHostReply, hostScriptFor} from './core.js';
-import {createWorkflow, DEFAULT_SETTINGS, PRESETS, TIMING_FIELDS, resolveSections, seconds} from './workflow.js';
+import {createWorkflow, DEFAULT_SETTINGS, DEFAULT_SAFETY, PRESETS, TIMING_FIELDS, resolveSections, seconds} from './workflow.js';
 import {LANGUAGES, createTranslator, createFormat, resolveLanguage} from './i18n.js';
 const csInterface = new CSInterface();
 const ENGINE_RELATIVE_PATH = 'engine/silences-engine';
@@ -209,7 +209,7 @@ function cancelEngine() {
 let sequence = null, step = 1, busy = false;
 // Rendered parts that depend on the language, kept so a switch can redraw them.
 let summaryParts = null, lastPreview = null, lastResult = null, lastPhase = null, lastBackup = null;
-const fields = ['threshold', ...TIMING_FIELDS];
+const fields = ['threshold', ...TIMING_FIELDS, 'minCutSpacing'];
 // Settings saved before version 3 used other field names. The label of each
 // field is unchanged, so values move to the field with the same label.
 const LEGACY_FIELDS = {noiseLevel:'threshold', minSilence:'minPause', minTalk:'minSpeech', marginBefore:'leadIn', marginAfter:'tail'};
@@ -246,9 +246,15 @@ function showProgress(phase) {
     return item;
   }));
 }
+/** Sentence about the ranges the engine left uncut, empty when there are none. */
+function skippedText(skipped) {
+  if (!skipped?.count) return '';
+  return t.plural('skipped.text', skipped.count, {reason:t(`skip.${skipped.reasons[0].reason}`)});
+}
 function renderConfirm() {
   if (!lastPreview) return;
-  $('confirmText').textContent = t.plural('confirm.text', lastPreview.cutCount, {seconds:fmt.seconds(lastPreview.removedSeconds), percent:fmt.percent(lastPreview.removedSeconds, lastPreview.rangeSeconds)});
+  const text = t.plural('confirm.text', lastPreview.cutCount, {seconds:fmt.seconds(lastPreview.removedSeconds), percent:fmt.percent(lastPreview.removedSeconds, lastPreview.rangeSeconds)});
+  $('confirmText').textContent = [text, skippedText(lastPreview.skipped)].filter(Boolean).join(' ');
 }
 function confirmCut(preview) {
   status('');
@@ -277,8 +283,12 @@ function renderResult() {
   const summary = lastResult;
   if (!summary) return;
   const cut = summary.cutCount > 0 && !summary.declined;
-  $('resultValue').textContent = summary.declined ? t('result.declined') : cut ? t('result.removed', {seconds:fmt.seconds(summary.removedSeconds)}) : t('result.none');
-  $('resultDetail').textContent = cut ? t.plural('result.cuts', summary.cutCount, {name:summary.backupName}) : t('result.backup', {name:summary.backupName});
+  const blocked = !cut && !summary.declined && summary.skipped?.count > 0;
+  $('resultValue').textContent = summary.declined ? t('result.declined') : cut ? t('result.removed', {seconds:fmt.seconds(summary.removedSeconds)}) : blocked ? t('result.blocked') : t('result.none');
+  const detail = summary.backupName
+    ? (cut ? t.plural('result.cuts', summary.cutCount, {name:summary.backupName}) : t('result.backup', {name:summary.backupName}))
+    : (cut ? t.plural('result.cutsNoBackup', summary.cutCount) : t('result.noBackup'));
+  $('resultDetail').textContent = [skippedText(summary.skipped), detail].filter(Boolean).join(' ');
 }
 function showResult(summary) {
   status('');
@@ -289,8 +299,26 @@ function updatePreset() {
   $('preset').value=Object.entries(PRESETS).find(([,preset])=>preset.values.every((v,i)=>v===Number($(fields[i+1]).value)))?.[0] || 'custom';
 }
 updatePreset();
+const CUT_SCOPE_KEY = 'open-silences-cut-scope';
+function storedCutScope() {
+  try { const value=localStorage.getItem(CUT_SCOPE_KEY); return value==='dialogue' ? 'dialogue' : 'selection'; } catch (_) { return 'selection'; }
+}
+for (const input of document.querySelectorAll('input[name="cutScope"]')) input.checked=input.value===storedCutScope();
+const SAFETY_KEY = 'open-silences-safety';
+const SAFETY_INPUTS = Object.freeze({backup:'safeBackup', verifyMix:'safeVerifyMix', readback:'safeReadback'});
+function storedSafety() {
+  try {
+    const value=JSON.parse(localStorage.getItem(SAFETY_KEY));
+    return {...DEFAULT_SAFETY, ...(value && typeof value==='object' ? value : {})};
+  } catch (_) { return {...DEFAULT_SAFETY}; }
+}
+{ const stored=storedSafety(); for (const [key,id] of Object.entries(SAFETY_INPUTS)) $(id).checked=Boolean(stored[key]); }
+function safetyConfig() { return Object.fromEntries(Object.entries(SAFETY_INPUTS).map(([key,id])=>[key,$(id).checked])); }
+function renderSafetyNote() { $('safety').textContent=t(safetyConfig().backup ? 'safety' : 'safety.none'); }
 function config() { return {
+  safety:safetyConfig(),
   scope:document.querySelector('input[name="scope"]:checked').value,
+  cutScope:document.querySelector('input[name="cutScope"]:checked')?.value || 'selection',
   analysisTracks:[...document.querySelectorAll('#tracks input:checked')].map(el=>({kind:'audio',index:Number(el.value)})),
   settings:Object.fromEntries(fields.map(field=>[field,$(field).value]))
 }; }
@@ -380,7 +408,7 @@ function applyLanguage(code) {
   $('language').value=t.language;
   $('primary').textContent=primaryText();
   if (sequenceRead) { renderSequence(); renderTracks(); } else $('sequenceName').textContent=t('sequence.reading');
-  renderScopeSummary(); renderConfirm(); renderResult(); renderBackup();
+  renderScopeSummary(); renderConfirm(); renderResult(); renderBackup(); renderSafetyNote();
   if (lastPhase) showProgress(lastPhase);
   if (typeof lastStatus.message==='function') status(lastStatus.message, lastStatus.kind);
 }
@@ -437,6 +465,10 @@ $('languageContinue').addEventListener('click',()=>{ storeLanguage(t.language); 
 
 function markScope() { markChoices('#scope'); }
 $('scope').addEventListener('change',markScope); markScope();
+$('cutScope').addEventListener('change',()=>{ markChoices('#cutScope'); try { localStorage.setItem(CUT_SCOPE_KEY, config().cutScope); } catch (_) {} });
+markChoices('#cutScope');
+$('safetyOptions').addEventListener('change',()=>{ markChoices('#safetyOptions'); try { localStorage.setItem(SAFETY_KEY, JSON.stringify(safetyConfig())); } catch (_) {} renderSafetyNote(); });
+markChoices('#safetyOptions');
 
 const initialLanguage=storedLanguage();
 applyLanguage(initialLanguage || resolveLanguage(hostLocale()));

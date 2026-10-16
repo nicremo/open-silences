@@ -24,13 +24,13 @@ Node.js 22 or newer is required.
 | `sequence` | no | Active sequence, length, frame rate, audio tracks A1, A2 |
 | `estimate` | no | Estimates the noise floor of the chosen tracks |
 | `preview` | no | Analyses and reports cuts and removed seconds, no backup |
-| `cut --yes` | yes | Verified backup, analysis, second mix check, cut, readback |
+| `cut --yes` | yes | Backup, analysis, cut in batches of 50, readback. Backup and readback are optional |
 
 All commands work on the active sequence in Premiere.
 
 ## Defaults
 
-The defaults follow the panel's Standard pacing: entire timeline, track A1, pauses from 160 ms, speech from 160 ms, 160 ms before and after speech. The noise floor default is -46 dB, one step below the panel's -45 dB start value. Use `--threshold auto` to measure it per recording.
+The defaults follow the panel's Standard pacing: entire timeline, track A1, cuts from 160 ms, speech from 160 ms, 160 ms before and after speech, every track cut inside the range, backup and readback on. The noise floor default is -46 dB, one step below the panel's -45 dB start value. Use `--threshold auto` to measure it per recording.
 
 | Option | Default | Values |
 | --- | --- | --- |
@@ -39,6 +39,11 @@ The defaults follow the panel's Standard pacing: entire timeline, track A1, paus
 | `--threshold` | `-46` | -60 to 0, or `auto` |
 | `--preset` | `standard` | `standard`, `calm`, `relaxed`, `fluid`, `energetic`, `tight` |
 | `--min-pause`, `--min-speech`, `--lead-in`, `--tail` | from preset | 0 to 10000 ms |
+| `--min-cut-spacing` | `0` (off) | 0 to 10000 ms |
+| `--cut-scope` | `selection` | `selection` (every track in the range), `dialogue` (only under speech clips) |
+| `--no-backup` | backup on | cut without a backup sequence |
+| `--verify-mix` | off | render the mix a second time right before the cut |
+| `--no-readback` | readback on | skip the check of every clip after the cut |
 | `--timeout` | `1800` | seconds per Premiere call |
 | `--engine` | bundled engine | path to `silences-engine` |
 
@@ -73,4 +78,4 @@ Only one command runs at a time. Premiere does not respond while it renders or c
 
 ## How it connects
 
-The bridge reads command files from `~/Library/Application Support/open-silences/bridge/` (only readable by your user) and answers with response files. It accepts the six Open Silences host calls only, never raw ExtendScript, and refuses commands that waited longer than two minutes.
+The bridge reads command files from `~/Library/Application Support/open-silences/bridge/` (only readable by your user) and answers with response files. It accepts the seven Open Silences host calls only, never raw ExtendScript, and refuses commands that waited longer than two minutes.

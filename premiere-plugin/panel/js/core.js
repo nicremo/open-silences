@@ -23,14 +23,12 @@ export const TICKS_PER_SECOND_NUMBER = 254016000000;
 /** Safety state of an unreadable or unverifiable host property. */
 export const UNKNOWN = null;
 
-/** Premiere frame rates that need drop frame timecode, which is not supported. */
-const DROP_FRAME_FPS = [29.97, 30000 / 1001, 59.94, 60000 / 1001];
-
 /**
- * Frame rates actually observed on the host. Only 25 fps was measured on
- * Premiere Pro 26.5.2, every other rate stays unproven and blocks a cut.
+ * Premiere frame rates that need drop frame timecode. The QE timecode builder
+ * below refuses them; the native cut path shows frame numbers instead and cuts
+ * every rate.
  */
-export const OBSERVED_FRAME_RATES = [25];
+const DROP_FRAME_FPS = [29.97, 30000 / 1001, 59.94, 60000 / 1001];
 
 /* ------------------------------------------------------------ tick algebra */
 
@@ -248,7 +246,8 @@ export function buildSnapshot({
   respectLocks = true,
   mode = 'delete_ripple',
   renderedMixdown = null,
-  selectedSections = null
+  selectedSections = null,
+  cutScope = null
 }) {
   if (!sequence || !Number.isInteger(sequence.fpsNumerator) || !Number.isInteger(sequence.fpsDenominator)) {
     throw new Error('The sequence frame rate is missing.');
@@ -287,6 +286,14 @@ export function buildSnapshot({
       if (muted === undefined) {
         throw new Error(`Mute state of ${kind}${track.index} is not readable.`);
       }
+      // Transition ranges are passed through exactly; null means the host
+      // could not list them and the clip flags decide.
+      const spans = track.transitionSpans === undefined ? {} : {
+        transitionSpans: track.transitionSpans === null ? null : track.transitionSpans.map(span => ({
+          startTicks: normalizeTicks(span.startTicks),
+          endTicks: normalizeTicks(span.endTicks)
+        }))
+      };
       return {
         kind,
         index: track.index,
@@ -294,6 +301,7 @@ export function buildSnapshot({
         locked,
         muted,
         role: ['dialogue', 'music', 'other'].includes(track.role) ? track.role : 'other',
+        ...spans,
         clips: track.clips.map(clip => {
           const disabled = normalizeBoolean(clip.disabled);
           const linked = normalizeBoolean(clip.linked);
@@ -335,12 +343,14 @@ export function buildSnapshot({
       minPause: parameters.minPause,
       minSpeech: parameters.minSpeech,
       leadIn: parameters.leadIn,
-      tail: parameters.tail
+      tail: parameters.tail,
+      ...(Number.isFinite(parameters.minCutSpacing) ? { minCutSpacing: parameters.minCutSpacing } : {})
     },
     channelMode,
     mode,
     rippleDriver,
-    respectLocks
+    respectLocks,
+    ...(cutScope ? { cutScope } : {})
   };
 }
 
@@ -366,11 +376,9 @@ export function assessCapabilities(sequence) {
     blockers.push('QE access for cutting is not confirmed.');
   }
   if (sequence.fpsSupported === true) {
-    readable.push(`Bildrate ${sequence.fps ?? sequence.fpsNumerator / sequence.fpsDenominator}`);
-  } else if (sequence.fpsObserved === false) {
-    blockers.push('Only 25 frames per second is proven on this host. This rate is not.');
+    readable.push(`Frame rate ${sequence.fps ?? sequence.fpsNumerator / sequence.fpsDenominator}`);
   } else {
-    blockers.push('This frame rate is not proven (drop frame or an unusual rate).');
+    blockers.push('The sequence frame rate is not readable.');
   }
   if (sequence.sourceTicksReadable === true) {
     readable.push('Source range in ticks');
@@ -460,12 +468,35 @@ export function summarizePlan(plan) {
     removedTicks += toBigIntTicks(interval.endTicks) - toBigIntTicks(interval.startTicks);
   }
   return {
-    cutCount: intervals.length,
+    // A cut is one pause; its pieces between clip boundaries are intervals.
+    cutCount: Array.isArray(plan.cuts) ? plan.cuts.length : intervals.length,
     razorCount: (plan.razorPoints || []).length,
     removedSeconds: Number(removedTicks) / TICKS_PER_SECOND_NUMBER,
     rejectionCount: (plan.rejections || []).length,
-    warningCount: (plan.warnings || []).length
+    warningCount: (plan.warnings || []).length,
+    skipped: summarizeSkipped(plan)
   };
+}
+
+/** Reason codes the engine reports for ranges it does not cut. */
+export const SKIP_REASONS = Object.freeze([
+  'transition', 'unsupportedClip', 'lockedTrack', 'noWritableClip', 'unanalysedClip', 'noWritableTrack'
+]);
+
+/**
+ * Counts the ranges the engine left uncut, most frequent reason first. The
+ * panel names the reason, so a plan without cuts never looks like a timeline
+ * without pauses.
+ */
+export function summarizeSkipped(plan) {
+  const counts = new Map();
+  for (const range of plan?.skipped || []) {
+    const reason = SKIP_REASONS.includes(range.reason) ? range.reason : 'unsupportedClip';
+    counts.set(reason, (counts.get(reason) || 0) + 1);
+  }
+  const reasons = [...counts].map(([reason, count]) => ({reason, count}))
+    .sort((a, b) => b.count - a.count || SKIP_REASONS.indexOf(a.reason) - SKIP_REASONS.indexOf(b.reason));
+  return {count: reasons.reduce((sum, entry) => sum + entry.count, 0), reasons};
 }
 
 /* ------------------------------------------------- readback and verification */
@@ -635,7 +666,7 @@ export function expectedAfterNativeCuts({ tracks, intervals }) {
   })}));
 }
 
-export function verifyReadback({ expected, actual }) {
+export function verifyReadback({ expected, actual, checkSource = () => true }) {
   const problems = [];
   if (!Array.isArray(expected) || !Array.isArray(actual)) {
     return ['Readback without expected or actual data.'];
@@ -673,10 +704,10 @@ export function verifyReadback({ expected, actual }) {
       if (compareTicks(expectedItem.endTicks, actualItem.endTicks) !== 0) {
         problems.push(`${where}: end position differs.`);
       }
-      if (compareTicks(expectedItem.sourceInTicks, actualItem.sourceInTicks) !== 0) {
+      if (checkSource(expectedItem) && compareTicks(expectedItem.sourceInTicks, actualItem.sourceInTicks) !== 0) {
         problems.push(`${where}: source start differs.`);
       }
-      if (compareTicks(expectedItem.sourceOutTicks, actualItem.sourceOutTicks) !== 0) {
+      if (checkSource(expectedItem) && compareTicks(expectedItem.sourceOutTicks, actualItem.sourceOutTicks) !== 0) {
         problems.push(`${where}: source end differs.`);
       }
       if ((expectedItem.mediaPath ?? null) !== actualItem.mediaPath) {
@@ -694,6 +725,53 @@ export function verifyReadback({ expected, actual }) {
     }
   }
   return problems;
+}
+
+/** Cuts per host call when a plan is applied in batches. */
+export const CUTS_PER_BATCH = 50;
+
+/**
+ * Splits a plan into host calls of at most `size` cuts, from the end of the
+ * timeline towards the start. A ripple only moves material after the cut, so
+ * the positions of every later batch stay valid. Every batch carries all
+ * pieces of its cuts and the removals of those pieces.
+ */
+export function planBatches(plan, size = CUTS_PER_BATCH) {
+  const keyOf = range => `${normalizeTicks(range.startTicks)}-${normalizeTicks(range.endTicks)}`;
+  const cuts = new Map();
+  for (const interval of plan.intervals || []) {
+    const cut = interval.cut ?? keyOf(interval);
+    if (!cuts.has(cut)) cuts.set(cut, []);
+    cuts.get(cut).push(interval);
+  }
+  const ordered = [...cuts.values()].sort((a, b) => compareTicks(b[0].startTicks, a[0].startTicks));
+  const removals = new Map();
+  for (const removal of plan.removals || []) {
+    const key = keyOf(removal);
+    if (!removals.has(key)) removals.set(key, []);
+    removals.get(key).push(removal);
+  }
+  const batches = [];
+  for (let index = 0; index < ordered.length; index += size) {
+    const group = ordered.slice(index, index + size);
+    const intervals = group.flat();
+    batches.push({
+      cutCount: group.length,
+      intervals,
+      removals: intervals.flatMap(interval => removals.get(keyOf(interval)) || [])
+    });
+  }
+  return batches;
+}
+
+/**
+ * Readback check after a batched cut: every surviving piece of the timeline
+ * readback taken before the cut must sit at its rippled position with its media.
+ * Source ranges are only predicted for clips at normal speed.
+ */
+export function verifyCutReadback({ before, intervals, after }) {
+  const expected = expectedKeptItems({ tracks: before, intervals });
+  return verifyReadback({ expected, actual: after, checkSource: item => item.speed === 1 });
 }
 
 /** Provenance comparison of a full readback, used for the original sequence. */
@@ -813,13 +891,40 @@ export function interpretHostReply(text) {
 }
 
 /**
+ * A string literal for evalScript. JSON string syntax is valid ExtendScript
+ * except for the two line separators, which must be escaped there.
+ */
+export function scriptString(value) {
+  return JSON.stringify(String(value)).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
+/** Fingerprints that travel as separate string arguments, in this order. */
+const FINGERPRINT_ARGUMENTS = ['expectedItemFingerprint', 'expectedStateFingerprint'];
+
+/**
+ * The payload as JSON text plus the fingerprints as separate strings. The host
+ * compares fingerprints as text and never parses them, and parsing a few
+ * hundred kilobytes of JSON in ExtendScript takes seconds.
+ */
+function payloadArguments(payload) {
+  const rest = {...payload};
+  const fingerprints = FINGERPRINT_ARGUMENTS.map(key => {
+    const value = rest[key];
+    delete rest[key];
+    return scriptString(value ?? '');
+  });
+  return [scriptString(JSON.stringify(rest)), ...fingerprints].join(', ');
+}
+
+/**
  * The exact evalScript text for one host call.
  *
  * A plain string argument is encoded once, so the JSX receives the string
- * itself. Only the apply payload is JSON text and therefore encoded twice.
+ * itself. Payloads are JSON text and therefore encoded twice; their
+ * fingerprints follow as plain strings.
  */
 export function hostScriptFor(name, payload) {
-  if (name === 'prepareCut') return `OS_prepareCut(${JSON.stringify(JSON.stringify(payload))})`;
+  if (name === 'prepareCut') return `OS_prepareCut(${payloadArguments(payload)})`;
   if (name === 'readItems') {
     return 'OS_readItems()';
   }
@@ -834,8 +939,11 @@ export function hostScriptFor(name, payload) {
   if (name === 'apply') {
     return `OS_applyPlan(${JSON.stringify(JSON.stringify(payload))})`;
   }
+  if (name === 'applyBatch') {
+    return `OS_applyBatch(${payloadArguments(payload)})`;
+  }
   if (name === 'renderAudio') {
-    return `OS_renderAudio(${JSON.stringify(JSON.stringify(payload))})`;
+    return `OS_renderAudio(${payloadArguments(payload)})`;
   }
   if (name === 'readItemsOfSequence') {
     return `OS_readItemsOfSequence(${JSON.stringify(payload.sequenceId)})`;

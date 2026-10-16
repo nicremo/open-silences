@@ -6,7 +6,7 @@
  * there is no way to send raw ExtendScript.
  */
 export const PROTOCOL_VERSION = 1;
-export const ALLOWED_CALLS = Object.freeze(['readSequence','readItems','readItemsOfSequence','prepareCut','renderAudio','apply']);
+export const ALLOWED_CALLS = Object.freeze(['readSequence','readItems','readItemsOfSequence','prepareCut','renderAudio','apply','applyBatch']);
 export const BRIDGE_SUBPATH = Object.freeze(['Library','Application Support','open-silences','bridge']);
 export const HEARTBEAT_INTERVAL_MS = 2000;
 export const HEARTBEAT_STALE_MS = 10000;

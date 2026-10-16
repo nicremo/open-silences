@@ -17,7 +17,7 @@ use std::time::Duration;
 use serde_json::json;
 use silences_engine::audio::{self, AnalyzeOptions, ChannelMode, Decoder};
 use silences_engine::detect::{detect_pauses, kept_segments, DetectionSettings, Levels};
-use silences_engine::level::{self, BLOCKS_PER_SECOND};
+use silences_engine::level::{self, VALUES_PER_SECOND};
 use silences_engine::planner::{PlanRequest, TICKS_PER_SECOND};
 use silences_engine::process::{self, CancelToken};
 
@@ -73,12 +73,13 @@ fn usage() -> String {
         "  silences-engine version",
         "",
         "Options:",
-        "  --threshold-db <db>       pause threshold, -90..0 (default -45)",
-        "  --min-pause <seconds>     shorter pauses stay (default 0.16)",
-        "  --min-speech <seconds>    shorter quiet regions are noise (default 0.16)",
+        "  --threshold-db <db>       levels strictly below are quiet, -90..0 (default -45)",
+        "  --min-pause <seconds>     shortest cut after the air (default 0.16)",
+        "  --min-speech <seconds>    shorter gaps between cuts join them (default 0.16)",
         "  --lead-in <seconds>       air kept before speech (default 0.16)",
         "  --tail <seconds>          air kept after speech (default 0.16)",
-        "  --values-per-second <n>   analysis resolution, 1..1000 (default 100)",
+        "  --min-cut-spacing <s>     thin out cuts at most this far apart, 0 is off (default 0)",
+        "  --values-per-second <n>   analysis resolution, 1..1000 (default 50)",
         "  --channel-mode <mode>     loudest (default) or mono",
         "  --stereo                  synonym for --channel-mode loudest",
         "  --mono                    synonym for --channel-mode mono",
@@ -97,7 +98,7 @@ fn parse_arguments(arguments: Vec<String>) -> Result<(String, Options), Failure>
         input: None,
         parameters: DetectionSettings::default(),
         channel_mode: ChannelMode::Loudest,
-        values_per_second: BLOCKS_PER_SECOND,
+        values_per_second: VALUES_PER_SECOND,
         ffmpeg: None,
         ffprobe: None,
         with_db_values: false,
@@ -123,6 +124,9 @@ fn parse_arguments(arguments: Vec<String>) -> Result<(String, Options), Failure>
             "--min-speech" => options.parameters.min_speech = parse_number(&value(&mut index)?)?,
             "--lead-in" => options.parameters.lead_in = parse_number(&value(&mut index)?)?,
             "--tail" => options.parameters.tail = parse_number(&value(&mut index)?)?,
+            "--min-cut-spacing" => {
+                options.parameters.min_cut_spacing = parse_number(&value(&mut index)?)?
+            }
             "--values-per-second" => options.values_per_second = parse_number(&value(&mut index)?)?,
             "--timeout-seconds" => {
                 let seconds = parse_number(&value(&mut index)?)?;
@@ -233,6 +237,7 @@ fn analyze(options: &Options, cancel: &CancelToken) -> CliResult {
         "requestedValuesPerSecond": analysis.requested_values_per_second,
         "valueDuration": value_duration,
         "windowFrames": analysis.window_frames,
+        "decimation": analysis.decimation,
         "durationSec": info.duration,
         "sampleRate": info.sample_rate,
         "channels": info.channels,
@@ -243,6 +248,7 @@ fn analyze(options: &Options, cancel: &CancelToken) -> CliResult {
             "minSpeech": options.parameters.min_speech,
             "leadIn": options.parameters.lead_in,
             "tail": options.parameters.tail,
+            "minCutSpacing": options.parameters.min_cut_spacing,
         },
         "pauses": pauses,
         "keptSegments": segments,
@@ -304,65 +310,94 @@ fn plan(options: &Options, cancel: &CancelToken) -> CliResult {
         stderr_limit: audio::DEFAULT_STDERR_LIMIT,
     };
 
+    // The native render is analysed from the start of the first selected
+    // section to the end of the last one, so the value grid starts there.
+    let to_seconds = |ticks: i64| ticks as f64 / TICKS_PER_SECOND as f64;
+    let range_start = request
+        .selected_sections
+        .first()
+        .map(|section| to_seconds(section.0))
+        .unwrap_or(0.0);
+    let range_end = request
+        .selected_sections
+        .last()
+        .map(|section| to_seconds(section.1))
+        .unwrap_or_else(|| to_seconds(request.sequence.end_ticks));
     let mut noise_estimate = None;
     let mut cache: HashMap<String, Vec<(f64, f64)>> = HashMap::new();
-    let mut source_intervals = |media_path: &str| -> Result<Vec<(f64, f64)>, String> {
-        if let Some(cached) = cache.get(media_path) {
-            return Ok(cached.clone());
-        }
-        let (_, analysis) = if native_pcm {
-            audio::analyze_native_wav(media_path, &analyze_options, cancel)
-        } else {
-            audio::analyze(
-                media_path,
-                decoder.as_ref().unwrap(),
-                &analyze_options,
-                cancel,
-            )
-        }
-        .map_err(|error| format!("cannot analyse {media_path}: {error}"))?;
-        if request.rendered_mixdown.as_deref() == Some(media_path) {
-            let expected = request.sequence.end_ticks as f64 / TICKS_PER_SECOND as f64;
-            if (analysis.duration_sec - expected).abs() > 0.001 {
-                return Err(format!(
-                    "native render duration {} does not match timeline {expected}",
-                    analysis.duration_sec
-                ));
+    let mut source_intervals =
+        |media_path: &str| -> Result<Vec<(f64, f64)>, String> {
+            if let Some(cached) = cache.get(media_path) {
+                return Ok(cached.clone());
             }
-        }
-        if options.with_db_values && native_pcm {
-            // Only selected time under an enabled dialogue clip is evidence for
-            // the room tone. Gaps render as digital silence.
-            let evidence = silences_engine::planner::intersect_sorted(
-                &request.selected_sections,
-                &silences_engine::planner::dialogue_coverage(&request),
-            );
-            let levels: Vec<f64> = analysis
-                .db_values
-                .iter()
-                .enumerate()
-                .filter_map(|(i, db)| {
-                    let at =
-                        (i as f64 * analysis.value_duration_sec * TICKS_PER_SECOND as f64) as i64;
-                    evidence
-                        .iter()
-                        .any(|&(start, end)| at >= start && at < end)
-                        .then_some(*db)
-                })
-                .collect();
-            noise_estimate = level::suggest_threshold(&levels);
-        }
-        let pauses = detect_pauses(
-            &Levels {
-                db: analysis.db_values.clone(),
-                block_seconds: analysis.value_duration_sec,
-                duration: analysis.duration_sec,
-            },
-            &request.parameters,
-        );
-        cache.insert(media_path.to_string(), pauses.clone());
-        Ok(pauses)
-    };
+            let native_render =
+                native_pcm && request.rendered_mixdown.as_deref() == Some(media_path);
+            let (info, analysis) = if native_render {
+                audio::analyze_native_wav_range(
+                    media_path,
+                    &analyze_options,
+                    Some((range_start, range_end)),
+                    cancel,
+                )
+            } else if native_pcm {
+                audio::analyze_native_wav(media_path, &analyze_options, cancel)
+            } else {
+                audio::analyze(
+                    media_path,
+                    decoder.as_ref().unwrap(),
+                    &analyze_options,
+                    cancel,
+                )
+            }
+            .map_err(|error| format!("cannot analyse {media_path}: {error}"))?;
+            if request.rendered_mixdown.as_deref() == Some(media_path) {
+                let expected = request.sequence.end_ticks as f64 / TICKS_PER_SECOND as f64;
+                if (info.duration - expected).abs() > 0.001 {
+                    return Err(format!(
+                        "native render duration {} does not match timeline {expected}",
+                        info.duration
+                    ));
+                }
+            }
+            // A native render is measured over the analysed range: its duration
+            // is the number of values divided by the values per second.
+            let (offset, duration) = if native_render {
+                (
+                    range_start,
+                    analysis.db_values.len() as f64 / analysis.values_per_second,
+                )
+            } else {
+                (0.0, analysis.duration_sec)
+            };
+            if options.with_db_values && native_render {
+                // The levels whose start lies inside a selected section.
+                let mut levels: Vec<f64> = Vec::new();
+                for &(start, end) in &request.selected_sections {
+                    let from = (to_seconds(start) - range_start).max(0.0);
+                    let until = from.max((to_seconds(end) - range_start).min(duration));
+                    levels.extend(analysis.db_values.iter().enumerate().filter_map(
+                        |(index, db)| {
+                            let at = index as f64 / analysis.values_per_second;
+                            (from <= at && at < until).then_some(*db)
+                        },
+                    ));
+                }
+                noise_estimate = level::suggest_threshold(&levels);
+            }
+            let pauses: Vec<(f64, f64)> = detect_pauses(
+                &Levels {
+                    db: analysis.db_values.clone(),
+                    block_seconds: analysis.value_duration_sec,
+                    duration,
+                },
+                &request.parameters,
+            )
+            .into_iter()
+            .map(|(start, end)| (start + offset, end + offset))
+            .collect();
+            cache.insert(media_path.to_string(), pauses.clone());
+            Ok(pauses)
+        };
 
     let plan = silences_engine::planner::build_plan(&request, &mut source_intervals)
         .map_err(Failure::usage)?;

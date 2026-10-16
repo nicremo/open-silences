@@ -165,9 +165,9 @@ test('a readable state produces a valid plan the panel accepts', () => {
   assert.equal(plan.removals.length, 2, 'video and audio are both handled');
 });
 
-test('the panel blocks an unobserved frame rate before any cut', async () => {
-  // The engine accepts the rate, the panel does not: only 25 fps is observed on
-  // the host. This test proves the panel side of that rule.
+test('the panel blocks an unreadable frame rate before any cut', async () => {
+  // Every readable rate can be cut because cut points are frame numbers. Only a
+  // rate the host cannot report blocks the cut.
   const { assessCapabilities } = await import('../panel/js/core.js');
   const blocked = assessCapabilities({
     ok: true,
@@ -181,7 +181,7 @@ test('the panel blocks an unobserved frame rate before any cut', async () => {
     audioStateReadable: true
   });
   assert.equal(blocked.canCut, false);
-  assert.ok(blocked.blockers.some(message => message.includes('25 frames per second')));
+  assert.ok(blocked.blockers.some(message => message.includes('frame rate is not readable')));
 
   const allowed = assessCapabilities({
     ok: true,

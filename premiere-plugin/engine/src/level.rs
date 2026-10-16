@@ -1,125 +1,136 @@
-//! Block levels in dBFS. Specification: docs/DETECTION.md, stage 1 and the
-//! threshold suggestion.
+//! Levels in dBFS. Specification: docs/DETECTION.md, stage 1 and the threshold
+//! suggestion.
 
-/// Analysis blocks per second requested from the PCM readers (about 10 ms).
-pub const BLOCKS_PER_SECOND: f64 = 100.0;
+/// Analysis values per second (20 ms per value).
+pub const VALUES_PER_SECOND: f64 = 50.0;
 
-/// Quietest reported level. Digital silence maps here.
-pub const FLOOR_DB: f64 = -100.0;
+/// Quietest level. Digital silence and everything quieter maps here.
+pub const FLOOR_DB: f64 = -60.0;
 
-/// RMS amplitude to dBFS, unrounded and floored at `FLOOR_DB`.
+/// Rate the levels are measured at. A render at a whole multiple of it keeps
+/// every n-th sample frame without a filter; any other rate is measured as it is.
+pub const ANALYSIS_RATE: u32 = 16_000;
+
+/// Sample frames per measured frame, and measured frames per value, for a
+/// render at `rate`. See docs/DETECTION.md, stage 1.
+pub fn analysis_grid(rate: u32, values_per_second: f64) -> (usize, usize) {
+    let step = if rate >= ANALYSIS_RATE && rate.is_multiple_of(ANALYSIS_RATE) {
+        (rate / ANALYSIS_RATE) as usize
+    } else {
+        1
+    };
+    let measured = f64::from(rate) / step as f64;
+    let window = ((measured / values_per_second).floor() as usize).max(1);
+    (step, window)
+}
+
+/// RMS amplitude to the stored level: dBFS floored at `FLOOR_DB`, kept as a
+/// 32 bit float and rounded to two decimals.
 pub fn amplitude_to_db(rms: f64) -> f64 {
-    if !rms.is_finite() || rms <= 0.0 {
-        return FLOOR_DB;
-    }
-    (20.0 * rms.log10()).max(FLOOR_DB)
+    let db = if rms.is_finite() && rms > 0.0 {
+        (20.0 * rms.log10()).max(FLOOR_DB)
+    } else {
+        FLOOR_DB
+    };
+    round_hundredths(db as f32 as f64)
 }
 
-/// Blocks at or below this level are digital silence from gaps, noise gates or
-/// denoisers, not room tone.
-pub const DIGITAL_SILENCE_DB: f64 = -90.0;
-
-/// Distance between the speech level and the highest allowed threshold.
-const SPEECH_MARGIN_DB: f64 = 16.0;
-/// Distance between the quiet level and the threshold.
-const QUIET_MARGIN_DB: f64 = 6.0;
-/// Minimum distance between quiet level and speech for a usable quiet level.
-const MIN_SEPARATION_DB: f64 = 12.0;
-/// Quiet level assumed when the pauses are digital silence.
-const GATED_QUIET_DB: f64 = -72.0;
-
-/// Threshold suggestion from block levels, see docs/DETECTION.md.
-pub fn suggest_threshold(levels: &[f64]) -> Option<f64> {
-    if levels.iter().any(|level| !level.is_finite()) {
-        return None;
+/// Rounds to two decimals like a decimal formatter: the exact decimal value of
+/// the float decides, halves go away from zero.
+pub fn round_hundredths(value: f64) -> f64 {
+    if !value.is_finite() || value.abs() >= 1e12 {
+        return value;
     }
-    let mut audible: Vec<f64> = levels
-        .iter()
-        .copied()
-        .filter(|level| *level > DIGITAL_SILENCE_DB)
-        .collect();
-    if audible.len() < BLOCKS_PER_SECOND as usize {
-        return None;
-    }
-    let gated_share = (levels.len() - audible.len()) as f64 / levels.len() as f64;
-    audible.sort_by(f64::total_cmp);
-    let speech = percentile(&audible, 0.9);
-    if speech < -50.0 {
-        return None;
-    }
-    let ceiling = speech - SPEECH_MARGIN_DB;
-    let measured = match quiet_peak(&audible, percentile(&audible, 0.5)) {
-        Some(peak) if speech - peak >= MIN_SEPARATION_DB => Some(peak),
-        Some(_) => None,
-        None if gated_share >= 0.05 => None,
-        None => {
-            let low = percentile(&audible, 0.05);
-            (speech - low >= MIN_SEPARATION_DB).then_some(low)
+    let magnitude = value.abs();
+    let scaled = magnitude * 100.0;
+    let lower = scaled.floor();
+    let fraction = scaled - lower;
+    // Far from a half the scaled float decides safely. Close to a half only the
+    // exact decimal expansion of the value can tell the two sides apart.
+    let hundredths = if (fraction - 0.5).abs() > 1e-6 {
+        if fraction > 0.5 {
+            lower + 1.0
+        } else {
+            lower
         }
+    } else {
+        exact_hundredths(magnitude)
     };
-    let quiet = match measured {
-        Some(level) => level,
-        None if gated_share >= 0.05 => GATED_QUIET_DB,
-        None => return None,
-    };
-    // Lower edge of speech: the quiet end of the blocks clearly above the room.
-    let speech_blocks: Vec<f64> = audible
-        .iter()
-        .copied()
-        .filter(|level| *level >= quiet + MIN_SEPARATION_DB)
+    let rounded = hundredths / 100.0;
+    if value.is_sign_negative() {
+        -rounded
+    } else {
+        rounded
+    }
+}
+
+/// Hundredths of a non negative value from its exact decimal expansion.
+fn exact_hundredths(magnitude: f64) -> f64 {
+    let text = format!("{magnitude:.80}");
+    let (whole, fraction) = text.split_once('.').unwrap_or((&text, "000"));
+    let digits: Vec<u64> = fraction
+        .bytes()
+        .map(|byte| u64::from(byte - b'0'))
         .collect();
-    if speech_blocks.is_empty() {
+    let whole: u64 = whole.parse().unwrap_or(0);
+    let mut hundredths = whole * 100 + digits[0] * 10 + digits[1];
+    if digits[2] >= 5 {
+        hundredths += 1;
+    }
+    hundredths as f64
+}
+
+/// Most rounds of the two group split.
+const MAX_ROUNDS: usize = 50;
+/// A centre has settled when it moved by less than this share of its value.
+const SETTLED_SHARE: f64 = 0.0001;
+
+/// Threshold suggestion, see docs/DETECTION.md: the levels split into a quiet
+/// and a loud group, the suggestion is the top of the quiet group in whole dB.
+pub fn suggest_threshold(levels: &[f64]) -> Option<f64> {
+    if levels.is_empty() || levels.iter().any(|level| !level.is_finite()) {
         return None;
     }
-    let speech_edge = percentile(&speech_blocks, 0.1);
-    let suggestion = ((quiet + speech_edge) / 2.0)
-        .max(quiet + QUIET_MARGIN_DB)
-        .min(ceiling);
-    Some((suggestion.clamp(-60.0, -20.0) * 10.0).round() / 10.0)
-}
-
-/// Value at quantile `q` of an ascending slice.
-fn percentile(sorted: &[f64], q: f64) -> f64 {
-    sorted[((sorted.len() - 1) as f64 * q).round() as usize]
-}
-
-/// Lowest clear peak of the level histogram below the median: 1 dB bins from
-/// -90 dBFS, smoothed over three bins, holding at least 2 percent of the blocks
-/// and followed by a valley of at most half its height 3 to 12 dB above it.
-/// Returns the mean level of the blocks around the peak.
-fn quiet_peak(sorted: &[f64], median: f64) -> Option<f64> {
-    const BINS: usize = 90;
-    let mut counts = [0usize; BINS];
-    let mut sums = [0.0f64; BINS];
-    for level in sorted {
-        let bin = ((level - DIGITAL_SILENCE_DB).floor().max(0.0) as usize).min(BINS - 1);
-        counts[bin] += 1;
-        sums[bin] += level;
+    let lowest = levels.iter().copied().fold(f64::INFINITY, f64::min);
+    let highest = levels.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if lowest == highest {
+        return Some(round_half_up(highest));
     }
-    let window = |bin: usize| bin.saturating_sub(1)..(bin + 2).min(BINS);
-    let smoothed: Vec<usize> = (0..BINS)
-        .map(|bin| counts[window(bin)].iter().sum())
-        .collect();
-    let minimum = (sorted.len() / 50).max(1);
-    for peak in 1..BINS - 1 {
-        if DIGITAL_SILENCE_DB + peak as f64 >= median {
+    let mut centres = [lowest, highest];
+    let mut quiet_top = lowest;
+    for _ in 0..MAX_ROUNDS {
+        // Assignment with the current centres; a tie joins the quiet group.
+        let mut sums = [0.0f64; 2];
+        let mut counts = [0usize; 2];
+        quiet_top = f64::NEG_INFINITY;
+        for &level in levels {
+            let group = usize::from((level - centres[1]).abs() < (level - centres[0]).abs());
+            sums[group] += level;
+            counts[group] += 1;
+            if group == 0 {
+                quiet_top = quiet_top.max(level);
+            }
+        }
+        let moved = [0, 1].map(|group| {
+            if counts[group] == 0 {
+                centres[group]
+            } else {
+                sums[group] / counts[group] as f64
+            }
+        });
+        let settled = (0..2)
+            .all(|group| ((centres[group] - moved[group]) / centres[group]).abs() < SETTLED_SHARE);
+        centres = moved;
+        if settled {
             break;
         }
-        let height = smoothed[peak];
-        if height < minimum || height < smoothed[peak - 1] || height < smoothed[peak + 1] {
-            continue;
-        }
-        let valley = (peak + 3..=(peak + 12).min(BINS - 1))
-            .map(|bin| smoothed[bin])
-            .min()
-            .unwrap_or(height);
-        if valley * 2 <= height {
-            let blocks: usize = counts[window(peak)].iter().sum();
-            let total: f64 = sums[window(peak)].iter().sum();
-            return Some(total / blocks as f64);
-        }
     }
-    None
+    Some(round_half_up(quiet_top))
+}
+
+/// Whole number, halves rounded up.
+fn round_half_up(value: f64) -> f64 {
+    (value + 0.5).floor()
 }
 
 #[cfg(test)]
@@ -127,80 +138,82 @@ mod tests {
     use super::*;
 
     #[test]
-    fn amplitude_maps_to_dbfs_without_rounding() {
+    fn whole_multiples_of_the_analysis_rate_keep_every_nth_frame() {
+        assert_eq!(analysis_grid(48_000, 50.0), (3, 320));
+        assert_eq!(analysis_grid(96_000, 50.0), (6, 320));
+        assert_eq!(analysis_grid(32_000, 50.0), (2, 320));
+        assert_eq!(analysis_grid(16_000, 50.0), (1, 320));
+        assert_eq!(analysis_grid(44_100, 50.0), (1, 882));
+        assert_eq!(analysis_grid(11_025, 50.0), (1, 220));
+        assert_eq!(analysis_grid(8_000, 50.0), (1, 160));
+    }
+
+    #[test]
+    fn amplitude_maps_to_rounded_dbfs_with_a_floor() {
         assert_eq!(amplitude_to_db(1.0), 0.0);
-        assert!((amplitude_to_db(0.5) - 20.0 * 0.5f64.log10()).abs() < 1e-12);
+        assert_eq!(amplitude_to_db(0.5), -6.02);
+        assert_eq!(amplitude_to_db(0.1), -20.0);
         assert_eq!(amplitude_to_db(0.0), FLOOR_DB);
         assert_eq!(amplitude_to_db(-0.25), FLOOR_DB);
         assert_eq!(amplitude_to_db(1e-9), FLOOR_DB);
         assert_eq!(amplitude_to_db(f64::NAN), FLOOR_DB);
         assert_eq!(amplitude_to_db(f64::INFINITY), FLOOR_DB);
+        // Just above the floor stays above it.
+        assert_eq!(amplitude_to_db(0.001001), -59.99);
     }
 
     #[test]
-    fn suggestion_needs_separate_quiet_and_loud_levels() {
-        let mut levels = vec![-50.0; 50];
-        levels.extend(vec![-20.0; 200]);
-        assert_eq!(suggest_threshold(&levels), Some(-36.0));
-
-        // Gated pauses: the quiet level counts as -72 dB, never as -100 dB.
-        let mut digital = vec![-100.0; 30];
-        digital.extend(vec![-20.0; 200]);
-        assert_eq!(suggest_threshold(&digital), Some(-46.0));
-
-        assert_eq!(suggest_threshold(&vec![-20.0; 200]), None);
-        assert_eq!(suggest_threshold(&vec![-70.0; 200]), None);
-        assert_eq!(suggest_threshold(&vec![-20.0; 99]), None);
-        assert_eq!(suggest_threshold(&[f64::NAN; 200]), None);
-    }
-
-    /// Speech levels spread over 20 dB, like real words and syllables.
-    fn speech(blocks: usize) -> Vec<f64> {
-        (0..blocks)
-            .map(|index| -35.0 + (index % 21) as f64)
-            .collect()
+    fn hundredths_follow_the_exact_decimal_value_with_halves_away_from_zero() {
+        // Exact binary halves round away from zero.
+        assert_eq!(round_hundredths(0.125), 0.13);
+        assert_eq!(round_hundredths(-0.125), -0.13);
+        assert_eq!(round_hundredths(0.375), 0.38);
+        // 1.005 and 2.675 are stored slightly below the half.
+        assert_eq!(round_hundredths(1.005), 1.0);
+        assert_eq!(round_hundredths(2.675), 2.67);
+        assert_eq!(round_hundredths(-45.005), -45.01);
+        assert_eq!(round_hundredths(-59.995), -59.99);
+        assert_eq!(round_hundredths(12.345), 12.35);
+        assert_eq!(round_hundredths(-0.001), 0.0);
+        assert_eq!(round_hundredths(-41.237), -41.24);
     }
 
     #[test]
-    fn digital_silence_from_gaps_does_not_drag_the_suggestion_down() {
-        // Gaps without dialogue render as digital silence, pauses hold room tone.
-        let mut levels = vec![-100.0; 300];
-        levels.extend(vec![-55.0; 100]);
+    fn the_suggestion_is_the_top_of_the_quiet_group() {
+        // 40 percent room tone at -58 dB, 60 percent speech from -35 to -15 dB.
+        let mut levels = vec![-58.0; 400];
+        levels.extend((0..600).map(|index| -35.0 + 20.0 * index as f64 / 599.0));
+        assert_eq!(suggest_threshold(&levels), Some(-58.0));
+
+        // Breaths between room tone and speech belong to the quiet group.
+        let mut levels = vec![-62.0f64.max(FLOOR_DB); 300];
+        levels.extend(vec![-48.3; 100]);
         levels.extend(vec![-20.0; 600]);
-        assert_eq!(suggest_threshold(&levels), Some(-37.5));
+        assert_eq!(suggest_threshold(&levels), Some(-48.0));
     }
 
     #[test]
-    fn rare_pauses_still_find_the_room_tone() {
-        // Only 5 percent pauses: a 10th percentile would land inside speech.
-        let mut levels = vec![-58.0; 50];
-        levels.extend(speech(950));
-        assert_eq!(suggest_threshold(&levels), Some(-45.5));
+    fn the_suggestion_rounds_halves_up_and_handles_edge_cases() {
+        assert_eq!(
+            suggest_threshold(&[-45.5, -45.5, -10.0, -10.0]),
+            Some(-45.0)
+        );
+        assert_eq!(
+            suggest_threshold(&[-45.6, -45.6, -10.0, -10.0]),
+            Some(-46.0)
+        );
+        assert_eq!(suggest_threshold(&[-33.0; 10]), Some(-33.0));
+        assert_eq!(suggest_threshold(&[]), None);
+        assert_eq!(suggest_threshold(&[-30.0, f64::NAN]), None);
+        // A centre at exactly 0 never settles; the split still ends after 50 rounds.
+        assert_eq!(suggest_threshold(&[0.0, 0.0, -60.0]), Some(-60.0));
     }
 
     #[test]
-    fn gated_pauses_put_the_threshold_below_speech() {
-        let mut levels = vec![-100.0; 300];
-        levels.extend(speech(700));
-        let suggestion = suggest_threshold(&levels).unwrap();
-        assert_eq!(suggestion, -52.5);
-    }
-
-    #[test]
-    fn the_suggestion_never_reaches_into_speech() {
-        // Loud room tone close to speech: the cap 16 dB below speech wins.
-        let mut levels = vec![-40.0; 200];
-        levels.extend(vec![-22.0; 800]);
-        assert_eq!(suggest_threshold(&levels), Some(-38.0));
-    }
-
-    #[test]
-    fn quiet_room_with_breaths_lands_in_the_middle_of_the_gap() {
-        // Good microphone: room tone at -68 dB, breaths at -55 dB, speech from
-        // -28 dB. Room tone plus 6 dB would keep every breath as speech.
-        let mut levels = vec![-68.0; 1000];
-        levels.extend(vec![-55.0; 100]);
-        levels.extend((0..3900).map(|index| -28.0 + (index % 15) as f64));
-        assert_eq!(suggest_threshold(&levels), Some(-47.5));
+    fn the_float_step_happens_before_the_rounding() {
+        // A level that only a 32 bit float moves across the half.
+        let level = -45.004_999_9f64;
+        assert_eq!(round_hundredths(level), -45.0);
+        assert_eq!(round_hundredths(level as f32 as f64), -45.01);
     }
 }

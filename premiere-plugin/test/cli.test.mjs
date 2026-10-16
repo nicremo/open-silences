@@ -47,15 +47,16 @@ import {parseCliArgs, UsageError, CLI_DEFAULTS} from '../panel/cli/args.mjs';
 test('defaults are entire timeline, A1, -46 dB and the Standard pacing',()=>{
   const parsed = parseCliArgs(['preview']);
   assert.equal(parsed.command, 'preview');
-  assert.deepEqual(parsed.config, {scope:'entire', analysisTracks:[{kind:'audio', index:0}],
-    settings:{threshold:-46, minPause:160, minSpeech:160, leadIn:160, tail:160}});
+  assert.deepEqual(parsed.config, {scope:'entire', analysisTracks:[{kind:'audio', index:0}], cutScope:'selection',
+    settings:{threshold:-46, minPause:160, minSpeech:160, leadIn:160, tail:160, minCutSpacing:0},
+    safety:{backup:true, verifyMix:false, readback:true}});
   assert.equal(parsed.autoThreshold, false);
   assert.equal(parsed.yes, false);
   assert.equal(CLI_DEFAULTS.threshold, -46);
 });
 test('presets, single timing overrides, tracks, scope and auto threshold',()=>{
   const parsed = parseCliArgs(['cut','--yes','--preset','calm','--tail','90','--tracks','A1,a3','--scope','inout','--threshold','auto','--json']);
-  assert.deepEqual(parsed.config.settings, {threshold:-46, minPause:600, minSpeech:160, leadIn:220, tail:90});
+  assert.deepEqual(parsed.config.settings, {threshold:-46, minPause:500, minSpeech:500, leadIn:500, tail:90, minCutSpacing:0});
   assert.deepEqual(parsed.config.analysisTracks, [{kind:'audio', index:0}, {kind:'audio', index:2}]);
   assert.equal(parsed.config.scope, 'inout');
   assert.equal(parsed.autoThreshold, true);
@@ -87,12 +88,13 @@ function fakeHost({noSilence = false} = {}) {
   const sequence = {ok:true,name:'Rohschnitt',identity:'doc:target',endTicks:END,fps:25,sections:{readable:true,inTicks:null,outTicks:null,selectedSections:[]},
     tracks,qeAvailable:true,fpsSupported:true,fpsObserved:true,fpsNumerator:25,fpsDenominator:1,zeroPointTicks:'0',sourceTicksReadable:true,mediaIdentityReadable:true,transitionsReadable:true,nativeTimelineAvailable:true};
   const items = {identity:'doc:target', tracks:tracks.map(t => ({kind:t.kind,index:t.index,items:[]}))};
+  const backupItems = JSON.stringify({ok:true, identity:'doc:backup', sequenceID:'backup', tracks:items.tracks});
   const client = {lastUnknown:() => null, call:async name => {
     calls.push(name);
     if (name === 'readSequence') return {ok:true, parsed:sequence, raw:'state'};
     if (name === 'readItems') return {ok:true, parsed:items, raw:'original'};
-    if (name === 'prepareCut') return {ok:true, parsed:{backupId:'backup', backupItems:'protected', backupName:'Rohschnitt BACKUP'}};
-    if (name === 'readItemsOfSequence') return {ok:true, parsed:{...items, identity:'doc:backup'}, raw:'protected'};
+    if (name === 'prepareCut') return {ok:true, parsed:{backupId:'backup', backupItems, backupName:'Rohschnitt BACKUP'}};
+    if (name === 'readItemsOfSequence') return {ok:true, parsed:JSON.parse(backupItems), raw:backupItems};
     if (name === 'renderAudio') return {ok:true, parsed:{mediaPath:'/render.wav'}};
     throw Error(`unexpected ${name}`);
   }};
@@ -116,8 +118,8 @@ test('preview reports the cuts with the standard settings and changes nothing',a
   const fake = fakeHost();
   const out = await runCli(['preview','--json'], fake);
   assert.equal(out.code, EXIT.ok, out.stderr);
-  assert.deepEqual(out.json(), {ok:true, cutCount:1, removedSeconds:1, rangeSeconds:10, noiseFloorEstimated:false,
-    settings:{threshold:-46, minPause:160, minSpeech:160, leadIn:160, tail:160}});
+  assert.deepEqual(out.json(), {ok:true, cutCount:1, removedSeconds:1, rangeSeconds:10, skipped:{count:0, reasons:[]}, noiseFloorEstimated:false,
+    settings:{threshold:-46, minPause:160, minSpeech:160, leadIn:160, tail:160, minCutSpacing:0}});
   assert.equal(fake.calls.includes('prepareCut'), false);
   assert.equal(fake.snapshots[0].snapshot.parameters.thresholdDb, -46);
 });
@@ -130,13 +132,20 @@ test('threshold auto estimates first and uses the estimate',async()=>{
   assert.equal(out.json().settings.threshold, -48.5);
   assert.equal(out.json().noiseFloorEstimated, true);
 });
-test('cut --yes runs the full protected workflow up to apply',async()=>{
+test('cut --yes runs the full protected workflow up to the first batch',async()=>{
   const fake = fakeHost();
-  // The fake host has no apply reply, so the run stops right at apply: proof that it got there.
+  // The fake host has no batch reply, so the run stops right at the first batch: proof that it got there.
   const out = await runCli(['cut','--yes','--json'], fake);
   assert.equal(out.code, EXIT.failed);
-  assert.deepEqual(fake.calls.filter(c => ['prepareCut','renderAudio','apply'].includes(c)), ['prepareCut','renderAudio','renderAudio','apply']);
+  assert.deepEqual(fake.calls.filter(c => ['prepareCut','renderAudio','applyBatch'].includes(c)), ['prepareCut','renderAudio','applyBatch']);
   assert.equal(out.json().backupName, 'Rohschnitt BACKUP');
+});
+test('the safety steps can be switched off and on',async()=>{
+  const fake = fakeHost();
+  const out = await runCli(['cut','--yes','--json','--no-backup','--verify-mix'], fake);
+  assert.equal(out.code, EXIT.failed);
+  assert.deepEqual(fake.calls.filter(c => ['prepareCut','renderAudio','applyBatch'].includes(c)), ['renderAudio','renderAudio','applyBatch']);
+  assert.equal(out.json().backupName, undefined);
 });
 test('cut with no silences succeeds without apply',async()=>{
   const fake = fakeHost({noSilence:true});
@@ -169,4 +178,12 @@ test('a missing bridge during a workflow command also exits with code 3',async()
   fake.client.call = async () => { throw new BridgeUnavailable('The Open Silences bridge is not running.'); };
   const out = await runCli(['preview','--json'], fake);
   assert.equal(out.code, EXIT.bridge);
+});
+
+test('cut scope and cut spacing are options with safe defaults',()=>{
+  const parsed = parseCliArgs(['preview','--cut-scope','dialogue','--min-cut-spacing','800']);
+  assert.equal(parsed.config.cutScope, 'dialogue');
+  assert.equal(parsed.config.settings.minCutSpacing, 800);
+  assert.throws(()=>parseCliArgs(['preview','--cut-scope','all']), UsageError);
+  assert.throws(()=>parseCliArgs(['preview','--min-cut-spacing','-1']), UsageError);
 });

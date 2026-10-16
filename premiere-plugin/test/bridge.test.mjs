@@ -15,8 +15,8 @@ const command = (overrides = {}) => ({protocol:PROTOCOL_VERSION, id:ID, name:'re
 const put = (dir, value, id = ID) => fs.writeFileSync(path.join(dir, commandFile(id)), JSON.stringify(value));
 const response = (dir, id = ID) => JSON.parse(fs.readFileSync(path.join(dir, responseFile(id)), 'utf8'));
 
-test('only the six named host calls are allowed',()=>{
-  assert.deepEqual([...ALLOWED_CALLS].sort(), ['apply','prepareCut','readItems','readItemsOfSequence','readSequence','renderAudio']);
+test('only the seven named host calls are allowed',()=>{
+  assert.deepEqual([...ALLOWED_CALLS].sort(), ['apply','applyBatch','prepareCut','readItems','readItemsOfSequence','readSequence','renderAudio']);
   assert.equal(validateCommand(command({name:'evalRaw'}), 1000).ok, false);
   assert.equal(validateCommand(command({name:'clone'}), 1000).ok, false);
 });

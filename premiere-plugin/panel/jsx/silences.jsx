@@ -15,8 +15,13 @@
  * * Removing the middle audio item with remove(false, true) and then the middle
  *   video item with remove(true, true) rippled both tracks exactly once.
  *
- * Not proven and therefore not used:
- * * generic multitrack or drop frame cutting,
+ * Batched cutting (OS_applyBatch) shows frame numbers while it cuts, so cut
+ * points never depend on a timecode flavour such as drop frame. It processes
+ * the timeline from the end towards the start, so one call never moves a
+ * position a later call still needs. It still waits for a check on long
+ * multitrack timelines in Premiere.
+ *
+ * Not readable and therefore not used:
  * * reading time remapping or the audible clip state (no getter on this host).
  *
  * Fail closed: unknown state blocks the cut. Nothing is guessed, nothing is
@@ -563,16 +568,96 @@ function os_pad2(value) {
   return (value < 10 ? '0' : '') + value;
 }
 
-/** JSON with a clear error when the host has no usable JSON. */
+/**
+ * JSON text of plain data: objects, arrays, strings, finite numbers, booleans
+ * and null, keys in their order. Own serializer: ExtendScript has no native
+ * JSON, the shared engine may carry any script implementation of it, and this
+ * one takes about half the time on a timeline read.
+ */
 function os_json(value) {
-  if (typeof JSON === 'undefined' || !JSON.stringify) {
-    return '{"ok":false,"error":"JSON is not available in this ExtendScript environment."}';
+  var parts = [];
+  os_appendJson(value, parts);
+  return parts.join('');
+}
+
+/** Characters a JSON string escapes; the line separators also break ExtendScript literals. */
+var OS_JSON_ESCAPE = /["\\\u0000-\u001f\u2028\u2029]/;
+var OS_JSON_SHORT = { '"': '\\"', '\\': '\\\\', '\b': '\\b', '\f': '\\f', '\n': '\\n', '\r': '\\r', '\t': '\\t' };
+
+function os_jsonString(text) {
+  if (!OS_JSON_ESCAPE.test(text)) {
+    return '"' + text + '"';
   }
-  return JSON.stringify(value);
+  var out = '"';
+  for (var index = 0; index < text.length; index++) {
+    var character = text.charAt(index);
+    var code = text.charCodeAt(index);
+    if (OS_JSON_SHORT.hasOwnProperty(character)) {
+      out += OS_JSON_SHORT[character];
+    } else if (code < 32 || code === 0x2028 || code === 0x2029) {
+      var hex = code.toString(16);
+      out += '\\u' + '0000'.substring(hex.length) + hex;
+    } else {
+      out += character;
+    }
+  }
+  return out + '"';
+}
+
+function os_appendJson(value, parts) {
+  var type = typeof value;
+  if (value === null || value === undefined || type === 'function') {
+    parts.push('null');
+  } else if (type === 'string') {
+    parts.push(os_jsonString(value));
+  } else if (type === 'number') {
+    parts.push(isFinite(value) ? String(value) : 'null');
+  } else if (type === 'boolean') {
+    parts.push(value ? 'true' : 'false');
+  } else if (Object.prototype.toString.call(value) === '[object Array]') {
+    parts.push('[');
+    for (var index = 0; index < value.length; index++) {
+      if (index > 0) {
+        parts.push(',');
+      }
+      os_appendJson(value[index], parts);
+    }
+    parts.push(']');
+  } else {
+    parts.push('{');
+    var first = true;
+    for (var key in value) {
+      if (!Object.prototype.hasOwnProperty.call(value, key) || value[key] === undefined || typeof value[key] === 'function') {
+        continue;
+      }
+      if (!first) {
+        parts.push(',');
+      }
+      first = false;
+      parts.push(os_jsonString(key), ':');
+      os_appendJson(value[key], parts);
+    }
+    parts.push('}');
+  }
 }
 
 function os_fail(message) {
   return os_json({ ok: false, error: message });
+}
+
+/** A failure the panel can tell apart by `code`. */
+function os_failCode(code, message) {
+  return os_json({ ok: false, error: message, code: code });
+}
+
+/**
+ * The tracks part of an item envelope, so two envelopes compare as text
+ * without parsing. `tracks` is the last key of every envelope.
+ */
+function os_tracksText(envelope) {
+  var text = String(envelope || '');
+  var at = text.indexOf('"tracks":');
+  return at < 0 ? null : text.substring(at);
 }
 
 function os_read(read) {
@@ -730,11 +815,67 @@ function os_frameRate(sequence) {
 /* --------------------------------------------------------- reading the host */
 
 /**
- * Track flags and transition count.
+ * Transition ranges of a track in ticks, from the public `track.transitions`
+ * list. A transition sits on an edit point, so it only concerns the clips whose
+ * edge lies inside its range. An unreadable list stays unknown (null).
+ */
+function os_transitionSpans(track) {
+  var list = os_read(function () {
+    return track.transitions;
+  });
+  if (list.error || !list.value) {
+    return null;
+  }
+  var count = os_read(function () {
+    return list.value.numItems;
+  });
+  if (count.error || typeof count.value !== 'number' || count.value < 0 || Math.floor(count.value) !== count.value) {
+    return null;
+  }
+  var spans = [];
+  for (var index = 0; index < count.value; index++) {
+    var item = list.value[index];
+    if (!item) {
+      return null;
+    }
+    var start = os_read(function () {
+      return item.start.ticks;
+    });
+    var end = os_read(function () {
+      return item.end.ticks;
+    });
+    if (start.error || end.error || !/^[0-9]+$/.test(String(start.value)) || !/^[0-9]+$/.test(String(end.value))) {
+      return null;
+    }
+    if (os_compareTicks(String(end.value), String(start.value)) <= 0) {
+      return null;
+    }
+    spans.push({ startTicks: String(start.value), endTicks: String(end.value) });
+  }
+  return spans;
+}
+
+/** True when the edit at `ticks` lies inside one of the transition ranges. */
+function os_edgeInSpans(spans, ticks) {
+  for (var index = 0; index < spans.length; index++) {
+    if (
+      os_compareTicks(spans[index].startTicks, String(ticks)) <= 0 &&
+      os_compareTicks(String(ticks), spans[index].endTicks) <= 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Track flags, transition count and transition ranges.
  *
  * Transitions are counted with the QE reader (`numTransitions`). The public
  * clip list does NOT contain transitions, so a clip type never proves their
- * absence. An unreadable count stays unknown.
+ * absence. The ranges come from the public track list. A range list that
+ * contradicts a positive QE count stays unknown, a readable QE count of zero
+ * proves an empty list.
  */
 function os_trackState(sequence, qeSequence, kind, index) {
   var collection = kind === 'video' ? sequence.videoTracks : sequence.audioTracks;
@@ -781,7 +922,14 @@ function os_trackState(sequence, qeSequence, kind, index) {
       }
     }
   }
-  return { locked: locked, muted: muted, transitions: transitions };
+  var spans = os_transitionSpans(track);
+  if (spans !== null && transitions !== null && transitions > 0 && spans.length === 0) {
+    spans = null;
+  }
+  if (spans === null && transitions === 0) {
+    spans = [];
+  }
+  return { locked: locked, muted: muted, transitions: transitions, spans: spans };
 }
 
 /**
@@ -823,7 +971,7 @@ function os_timeRemap(clip) {
   return null;
 }
 
-function os_readClip(clip, trackKind, trackIndex, trackHasTransitions) {
+function os_readClip(clip, trackKind, trackIndex, transitionSpans) {
   var name = os_read(function () {
     return clip.name;
   });
@@ -895,8 +1043,9 @@ function os_readClip(clip, trackKind, trackIndex, trackHasTransitions) {
     // Never false: this host has no remap reader.
     timeRemap: os_timeRemap(clip),
     nested: nested,
-    transitionIn: trackHasTransitions === null ? null : trackHasTransitions,
-    transitionOut: trackHasTransitions === null ? null : trackHasTransitions,
+    // Per clip: only an edge inside a transition range counts.
+    transitionIn: transitionSpans === null ? null : os_edgeInSpans(transitionSpans, start.value),
+    transitionOut: transitionSpans === null ? null : os_edgeInSpans(transitionSpans, end.value),
     mediaPath: mediaPath,
     projectItemId: projectItemId,
     disabled: disabled,
@@ -921,14 +1070,7 @@ function os_readTracks(sequence, qeSequence) {
       var clips = [];
       var clipCount = track.clips.numItems;
       for (var clipIndex = 0; clipIndex < clipCount; clipIndex++) {
-        clips.push(
-          os_readClip(
-            track.clips[clipIndex],
-            kind,
-            index,
-            state.transitions === null ? null : state.transitions > 0
-          )
-        );
+        clips.push(os_readClip(track.clips[clipIndex], kind, index, state.spans));
       }
       tracks.push({
         kind: kind,
@@ -937,6 +1079,7 @@ function os_readTracks(sequence, qeSequence) {
         locked: state.locked,
         muted: state.muted,
         transitions: state.transitions,
+        transitionSpans: state.spans,
         role: kind === 'audio' && index === 0 ? 'dialogue' : 'other',
         clips: clips
       });
@@ -1058,7 +1201,7 @@ function OS_readSequence() {
     var linkedReadable = true;
     var clipCount = 0;
     for (var trackIndex = 0; trackIndex < tracks.length; trackIndex++) {
-      if (tracks[trackIndex].transitions === null) {
+      if (tracks[trackIndex].transitionSpans === null) {
         transitionsReadable = false;
       }
       for (var clipIndex = 0; clipIndex < tracks[trackIndex].clips.length; clipIndex++) {
@@ -1162,29 +1305,66 @@ function os_pluginBin(name) {
   return root.createBin(name);
 }
 
-/** Make and verify the protected backup before rendering or cutting. */
-function OS_prepareCut(payloadJson) {
+/** The one sequence whose ID is not in `knownIds`, or null. */
+function os_newSequence(knownIds) {
+  var sequences = app.project.sequences;
+  var found = null;
+  for (var index = 0; index < sequences.numSequences; index++) {
+    var id = String(sequences[index].sequenceID);
+    var known = false;
+    for (var previous = 0; previous < knownIds.length; previous++) {
+      if (knownIds[previous] === id) {
+        known = true;
+        break;
+      }
+    }
+    if (!known) {
+      if (found) {
+        return null;
+      }
+      found = sequences[index];
+    }
+  }
+  return found;
+}
+
+/**
+ * Make and verify the protected backup before rendering or cutting. The copy
+ * is never opened: it is found by its new sequenceID, read once and compared
+ * with the item fingerprint the panel has just read, so a sequence that
+ * changed in between yields a copy that differs and stops here. The state
+ * fingerprint is checked when the caller sends one. Fingerprints may come as
+ * separate arguments, which spares parsing them.
+ */
+function OS_prepareCut(payloadJson, itemFingerprint, stateFingerprint) {
   var target = app.project.activeSequence;
   try {
     var payload = JSON.parse(payloadJson);
-    if (!target || os_identity(target) !== payload.expectedIdentity || OS_readSequence() !== payload.expectedStateFingerprint ||
-        os_itemEnvelope(target) !== payload.expectedItemFingerprint) return os_fail('The selection has changed. Please choose the range again.');
-    var cloned = JSON.parse(OS_cloneSequence(payload.expectedIdentity, payload.expectedItemFingerprint));
-    if (!cloned.ok) return os_fail(cloned.error);
-    var backup = app.project.activeSequence;
-    if (String(backup.sequenceID) === String(target.sequenceID) ||
-        os_json(os_readItemsOf(backup)) !== os_json(os_readItemsOf(target))) return os_fail('The backup does not match the sequence.');
+    var expectedTracks = os_tracksText(itemFingerprint || payload.expectedItemFingerprint);
+    var expectedState = stateFingerprint || payload.expectedStateFingerprint;
+    if (!target || os_identity(target) !== payload.expectedIdentity || !expectedTracks ||
+        (expectedState && OS_readSequence() !== expectedState)) return os_fail('The selection has changed. Please choose the range again.');
+    var knownIds = os_sequenceIds();
+    var cloned = os_read(function () {
+      return target.clone();
+    });
+    if (cloned.error) return os_fail('The sequence could not be cloned: ' + cloned.error);
+    var backup = os_newSequence(knownIds);
+    if (!backup || String(backup.sequenceID) === String(target.sequenceID)) return os_fail('The new sequence copy could not be identified.');
     var stamp = new Date();
     backup.name = String(target.name) + ' - Backup ' + stamp.getFullYear() + '-' + (stamp.getMonth()+1) + '-' + stamp.getDate() + ' ' + stamp.getHours() + ':' + stamp.getMinutes() + ':' + stamp.getSeconds();
     var bin = os_pluginBin('Open Silences Backups');
     if (!bin) return os_fail('The backup bin could not be created.');
     backup.projectItem.moveBin(bin);
     var backupItems = os_itemEnvelope(backup);
-    if (os_itemEnvelope(target) !== payload.expectedItemFingerprint) return os_fail('The sequence changed during the backup.');
+    if (os_tracksText(backupItems) !== expectedTracks) return os_fail('The backup does not match the sequence.');
     return os_json({ok:true, backupId:String(backup.sequenceID), backupName:String(backup.name), backupItems:backupItems,
-      targetId:String(target.sequenceID), targetIdentity:os_identity(target), targetItems:os_itemEnvelope(target)});
+      targetId:String(target.sequenceID), targetIdentity:os_identity(target)});
   } catch (error) { return os_fail('Backup failed: ' + String(error)); }
-  finally { if (target) app.project.openSequence(target.sequenceID); }
+  finally {
+    var active = app.project.activeSequence;
+    if (target && (!active || String(active.sequenceID) !== String(target.sequenceID))) app.project.openSequence(target.sequenceID);
+  }
 }
 
 /**
@@ -1435,6 +1615,31 @@ function os_findExactItem(track, interval) {
   var startTicks = String(interval.startTicks);
   var endTicks = String(interval.endTicks);
   var clips = track.clips;
+  // Clips are kept in timeline order, so a binary search on the start needs a
+  // few reads instead of one per clip. Every clip read is a host call.
+  var low = 0;
+  var high = clips.numItems - 1;
+  while (low <= high) {
+    var middle = Math.floor((low + high) / 2);
+    var candidate = clips[middle];
+    var order = os_compareTicks(String(candidate.start.ticks), startTicks);
+    if (order === 0) {
+      if (String(candidate.end.ticks) === endTicks) {
+        return candidate;
+      }
+      break;
+    }
+    if (order < 0) {
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return os_scanExactItem(clips, startTicks, endTicks);
+}
+
+/** Linear lookup for a collection that is not in timeline order. */
+function os_scanExactItem(clips, startTicks, endTicks) {
   for (var index = 0; index < clips.numItems; index++) {
     var clip = clips[index];
     if (String(clip.start.ticks) === startTicks && String(clip.end.ticks) === endTicks) {
@@ -1720,6 +1925,348 @@ function OS_applyPlan(payloadJson) {
   }
 }
 
+/** Premiere display format that shows plain frame numbers. */
+var OS_DISPLAY_FRAMES = 109;
+
+/**
+ * Sets the video display format of a sequence and reports whether it took.
+ * The property is tried first, the sequence settings second.
+ */
+function os_setDisplayFormat(sequence, format) {
+  try {
+    sequence.videoDisplayFormat = format;
+  } catch (propertyError) {
+    // Read only on this host, the settings route follows.
+  }
+  if (Number(sequence.videoDisplayFormat) === format) {
+    return true;
+  }
+  try {
+    var settings = sequence.getSettings();
+    settings.videoDisplayFormat = format;
+    sequence.setSettings(settings);
+  } catch (settingsError) {
+    return false;
+  }
+  return Number(sequence.videoDisplayFormat) === format;
+}
+
+/** Undo step for a sync lock this call switched on. */
+function os_syncRestorer(qeTrack) {
+  return function () {
+    qeTrack.setSyncLock(false);
+  };
+}
+
+/** Undo step for a track targeting this call changed. */
+function os_targetRestorer(track, targeted) {
+  return function () {
+    track.setTargeted(targeted, true);
+  };
+}
+
+/** In and out points that are not set read back as this tick value. */
+var OS_UNSET_POINT_TICKS = '-101606400000000000';
+
+/**
+ * The ranges a batch removes, latest first: touching pieces join into one
+ * range, so a cut across clip boundaries is removed in one step.
+ */
+function os_batchRanges(intervals) {
+  var pieces = intervals.slice(0);
+  pieces.sort(function (first, second) {
+    return os_compareTicks(String(first.startTicks), String(second.startTicks));
+  });
+  var ranges = [];
+  for (var index = 0; index < pieces.length; index++) {
+    var start = String(pieces[index].startTicks);
+    var end = String(pieces[index].endTicks);
+    var last = ranges.length ? ranges[ranges.length - 1] : null;
+    if (last && os_compareTicks(start, last.endTicks) <= 0) {
+      if (os_compareTicks(end, last.endTicks) > 0) {
+        last.endTicks = end;
+      }
+    } else {
+      ranges.push({ startTicks: start, endTicks: end });
+    }
+  }
+  ranges.reverse();
+  return ranges;
+}
+
+/** Sum of two non negative decimal tick strings, exact at any length. */
+function os_addTicks(first, second) {
+  var a = String(first);
+  var b = String(second);
+  var result = '';
+  var carry = 0;
+  for (var index = 0; index < Math.max(a.length, b.length) || carry; index++) {
+    var digit = carry;
+    if (index < a.length) {
+      digit += a.charCodeAt(a.length - 1 - index) - 48;
+    }
+    if (index < b.length) {
+      digit += b.charCodeAt(b.length - 1 - index) - 48;
+    }
+    result = String(digit % 10) + result;
+    carry = digit >= 10 ? 1 : 0;
+  }
+  return result.replace(/^0+(?=[0-9])/, '');
+}
+
+/**
+ * Difference of two non negative decimal tick strings, exact at any length.
+ * Null when the result would be negative.
+ */
+function os_subtractTicks(later, earlier) {
+  var a = String(later);
+  var b = String(earlier);
+  if (os_compareTicks(a, b) < 0) {
+    return null;
+  }
+  var result = '';
+  var borrow = 0;
+  for (var index = 0; index < a.length; index++) {
+    var digit = a.charCodeAt(a.length - 1 - index) - 48 - borrow;
+    if (index < b.length) {
+      digit -= b.charCodeAt(b.length - 1 - index) - 48;
+    }
+    borrow = digit < 0 ? 1 : 0;
+    result = String(digit + borrow * 10) + result;
+  }
+  return result.replace(/^0+(?=[0-9])/, '');
+}
+
+/**
+ * Removes every range with Premiere's own extract: in and out points mark the
+ * range and extract ripples all targeted tracks in one step. Every unlocked
+ * track is targeted for the batch. In and out points are checked before and
+ * the sequence length after every range, so an unexpected result stops the
+ * batch. In and out points the user had set come back, moved by the time
+ * removed before them.
+ */
+function os_extractRanges(active, qeSequence, ranges, restore) {
+  var inPoint = String(active.getInPointAsTime().ticks);
+  var outPoint = String(active.getOutPointAsTime().ticks);
+  var groups = [active.videoTracks, active.audioTracks];
+  for (var group = 0; group < groups.length; group++) {
+    for (var trackIndex = 0; trackIndex < groups[group].numTracks; trackIndex++) {
+      var track = groups[group][trackIndex];
+      if (track.isLocked()) {
+        continue;
+      }
+      var targeted = Boolean(track.isTargeted());
+      if (!targeted) {
+        track.setTargeted(true, true);
+        restore.push(os_targetRestorer(track, false));
+      }
+    }
+  }
+  var videoRate = active.getSettings().videoFrameRate;
+  var format = function (ticks) {
+    var time = new Time();
+    time.ticks = String(ticks);
+    return time.getFormatted(videoRate, active.videoDisplayFormat);
+  };
+  // Extract clears both points, so each one the user had set is put back.
+  var removedBeforeIn = '0';
+  var removedBeforeOut = '0';
+  var hasIn = inPoint !== OS_UNSET_POINT_TICKS && /^[0-9]+$/.test(inPoint);
+  var hasOut = outPoint !== OS_UNSET_POINT_TICKS && /^[0-9]+$/.test(outPoint);
+  if (hasIn) {
+    restore.push(function () {
+      qeSequence.setInPoint(format(os_subtractTicks(inPoint, removedBeforeIn)));
+    });
+  }
+  if (hasOut) {
+    restore.push(function () {
+      qeSequence.setOutPoint(format(os_subtractTicks(outPoint, removedBeforeOut)));
+    });
+  }
+  var applied = 0;
+  var end = String(active.end);
+  for (var index = 0; index < ranges.length; index++) {
+    var range = ranges[index];
+    var inCode = format(range.startTicks);
+    var outCode = format(range.endTicks);
+    if (!inCode || !outCode) {
+      return { ok: false, applied: applied, error: 'A cut point cannot be expressed in the display format.' };
+    }
+    qeSequence.setInOutPoints(inCode, outCode);
+    // The largest and the smallest frame numbers of the batch prove that the
+    // timecodes land exactly; the length check covers every range.
+    if ((index === 0 || index === ranges.length - 1) &&
+        (String(active.getInPointAsTime().ticks) !== range.startTicks || String(active.getOutPointAsTime().ticks) !== range.endTicks)) {
+      return { ok: false, applied: applied, error: 'In and out points did not land on the cut.' };
+    }
+    qeSequence.extract();
+    var length = os_subtractTicks(range.endTicks, range.startTicks);
+    var shorter = String(active.end);
+    if (os_subtractTicks(end, shorter) !== length) {
+      return { ok: false, applied: applied, error: 'The sequence did not shrink by the cut length.' };
+    }
+    end = shorter;
+    if (hasIn && os_compareTicks(range.endTicks, inPoint) <= 0) {
+      removedBeforeIn = os_addTicks(removedBeforeIn, length);
+    }
+    if (hasOut && os_compareTicks(range.endTicks, outPoint) <= 0) {
+      removedBeforeOut = os_addTicks(removedBeforeOut, length);
+    }
+    applied++;
+  }
+  return { ok: true, applied: applied };
+}
+
+/**
+ * OS_applyBatch: cuts one batch of a plan on the active sequence, from the end
+ * of the timeline towards the start, so every earlier position stays valid for
+ * the next batch.
+ *
+ * While the batch runs the sequence shows frame numbers, so every cut point is
+ * a plain frame count and no drop frame timecode is parsed. Each range is
+ * removed with Premiere's extract when the host offers it. Otherwise every
+ * unlocked track is sync locked, each piece is razored and the one ripple per
+ * piece moves all tracks together. Display format, targeting and sync locks
+ * are restored before the call returns, also after a failure.
+ *
+ * Item and state fingerprints, when given, are checked right before the first
+ * cut and fail with code `changed`. They may come as separate arguments.
+ */
+function OS_applyBatch(payloadJson, itemFingerprint, stateFingerprint) {
+  var active = app.project.activeSequence;
+  var restore = [];
+  var removed = 0;
+  var applied = 0;
+  try {
+    var payload = JSON.parse(payloadJson);
+    if (!payload || !payload.intervals || !payload.removals || !payload.expectedIdentity) {
+      return os_fail('The batch request is incomplete. Nothing is cut.');
+    }
+    if (!active || os_identity(active) !== payload.expectedIdentity) {
+      return os_fail('The active sequence is not the planned one. Nothing is cut.');
+    }
+    var expectedItems = itemFingerprint || payload.expectedItemFingerprint;
+    if (expectedItems && os_itemEnvelope(active) !== expectedItems) {
+      return os_failCode('changed', 'The sequence changed since it was read. Nothing is cut.');
+    }
+    var expectedState = stateFingerprint || payload.expectedStateFingerprint;
+    if (expectedState && OS_readSequence() !== expectedState) {
+      return os_failCode('changed', 'The tracks or settings changed since they were read. Nothing is cut.');
+    }
+    if (payload.intervals.length === 0) {
+      return os_json({ ok: true, removed: 0, applied: 0, framesShown: false });
+    }
+    app.enableQE();
+    var qeSequence = qe.project.getActiveSequence();
+    if (!qeSequence) {
+      return os_fail('QE access is not available, nothing is cut.');
+    }
+
+    var previousFormat = os_read(function () {
+      return active.videoDisplayFormat;
+    });
+    var framesShown = false;
+    if (!previousFormat.error && previousFormat.value !== undefined && previousFormat.value !== null) {
+      var originalFormat = Number(previousFormat.value);
+      restore.push(function () {
+        os_setDisplayFormat(active, originalFormat);
+      });
+      framesShown = os_setDisplayFormat(active, OS_DISPLAY_FRAMES);
+    }
+
+    if (typeof qeSequence.extract === 'function' && typeof qeSequence.setInOutPoints === 'function') {
+      var extracted = os_extractRanges(active, qeSequence, os_batchRanges(payload.intervals), restore);
+      applied = extracted.applied;
+      if (!extracted.ok) {
+        return os_fail(extracted.error + ' Stopped after ' + applied + ' cuts.');
+      }
+      return os_json({ ok: true, applied: applied, framesShown: framesShown, method: 'extract' });
+    }
+
+    var kinds = ['video', 'audio'];
+    for (var kindIndex = 0; kindIndex < kinds.length; kindIndex++) {
+      var collection = kinds[kindIndex] === 'video' ? active.videoTracks : active.audioTracks;
+      for (var trackIndex = 0; trackIndex < collection.numTracks; trackIndex++) {
+        var qeTrack =
+          kinds[kindIndex] === 'video' ? qeSequence.getVideoTrackAt(trackIndex) : qeSequence.getAudioTrackAt(trackIndex);
+        if (qeTrack.isLocked()) {
+          continue;
+        }
+        if (!qeTrack.isSyncLocked()) {
+          qeTrack.setSyncLock(true);
+          if (!qeTrack.isSyncLocked()) {
+            return os_fail('Sync lock could not be enabled, nothing is cut.');
+          }
+          restore.push(os_syncRestorer(qeTrack));
+        }
+      }
+    }
+
+    var planIndex = os_indexPlan({ removals: payload.removals, intervals: payload.intervals });
+    var pieces = payload.intervals.slice(0);
+    pieces.sort(function (first, second) {
+      return os_compareTicks(String(second.startTicks), String(first.startTicks));
+    });
+    var videoRate = active.getSettings().videoFrameRate;
+    for (var pieceIndex = 0; pieceIndex < pieces.length; pieceIndex++) {
+      var piece = pieces[pieceIndex];
+      var tracks = planIndex.tracksOf(piece);
+      var drivers = 0;
+      for (var driverIndex = 0; driverIndex < tracks.length; driverIndex++) {
+        if (tracks[driverIndex].ripple) {
+          drivers++;
+        }
+      }
+      if (drivers !== 1) {
+        return os_fail('A piece has ' + drivers + ' ripple tracks. Stopped after ' + applied + ' pieces.');
+      }
+      // The end first: the start cut never moves the end position.
+      var edges = [String(piece.endTicks), String(piece.startTicks)];
+      for (var edgeIndex = 0; edgeIndex < edges.length; edgeIndex++) {
+        var time = new Time();
+        time.ticks = edges[edgeIndex];
+        var timecode = time.getFormatted(videoRate, active.videoDisplayFormat);
+        if (!timecode) {
+          return os_fail('A cut point cannot be expressed in the display format. Stopped after ' + applied + ' pieces.');
+        }
+        for (var razorIndex = 0; razorIndex < tracks.length; razorIndex++) {
+          var razorTrack =
+            tracks[razorIndex].kind === 'video'
+              ? qeSequence.getVideoTrackAt(tracks[razorIndex].index)
+              : qeSequence.getAudioTrackAt(tracks[razorIndex].index);
+          razorTrack.razor(timecode, true, true);
+        }
+      }
+      // Lifts first, the one ripple last.
+      tracks.sort(function (first, second) {
+        return (first.ripple ? 1 : 0) - (second.ripple ? 1 : 0);
+      });
+      for (var removalIndex = 0; removalIndex < tracks.length; removalIndex++) {
+        var task = tracks[removalIndex];
+        var hostTrack = (task.kind === 'video' ? active.videoTracks : active.audioTracks)[task.index];
+        var item = os_findExactItem(hostTrack, piece);
+        if (!item) {
+          return os_fail('A cut piece is missing on ' + task.key + '. Stopped after ' + applied + ' pieces.');
+        }
+        item.remove(task.ripple === true, true);
+        removed++;
+      }
+      applied++;
+    }
+    return os_json({ ok: true, removed: removed, applied: applied, framesShown: framesShown });
+  } catch (error) {
+    return os_fail('The batch could not be cut: ' + String(error) + ' Stopped after ' + applied + ' pieces.');
+  } finally {
+    for (var undo = restore.length - 1; undo >= 0; undo--) {
+      try {
+        restore[undo]();
+      } catch (restoreError) {
+        // Restoring is best effort, the readback reports the state.
+      }
+    }
+  }
+}
+
 function os_wavePreset() {
   try {
     var path = String(app.path).replace(/[\\\/]$/, '') + '/Contents/MediaIO/systempresets/3F3F3F3F_57415645/Waveform Audio 48kHz 16-bit.epr';
@@ -1727,22 +2274,142 @@ function os_wavePreset() {
   } catch (error) { return null; }
 }
 
+/**
+ * Every readable frame rate can be cut: cut points are frame numbers shown in
+ * the frames display format, so no timecode flavour has to be parsed.
+ */
 function os_cutRateSupported(rate) {
-  return Math.abs(rate.fps - 25) < 1e-6 || (rate.numerator === 60000 && rate.denominator === 1001);
+  return Boolean(rate) && rate.fps > 0 && rate.numerator > 0 && rate.denominator > 0;
 }
 
-/** Render selected audible tracks on a native clone, restore active sequence. */
-function OS_renderAudio(payloadJson) {
+/** Channel count and WAV sample type of the analysis render: mono, 32 bit float. */
+var OS_ANALYSIS_CHANNELS = 1;
+var OS_ANALYSIS_SAMPLE_TYPE = 4;
+
+/** Premiere ticks per second. */
+var OS_TICKS_PER_SECOND = 254016000000;
+
+/** Audio sample rate of a sequence in Hz, or null when it is not readable. */
+function os_sequenceAudioRate(sequence) {
+  var read = os_read(function () {
+    return sequence.getSettings().audioSampleRate;
+  });
+  if (read.error || !read.value) {
+    return null;
+  }
+  var ticks = Number(read.value.ticks);
+  var rate = ticks > 0 ? Math.round(OS_TICKS_PER_SECOND / ticks) : 0;
+  return rate >= 8000 && rate <= 768000 ? rate : null;
+}
+
+/**
+ * Replaces the value of one exporter parameter in preset XML, whichever order
+ * identifier and value have inside their parameter block. Null when absent.
+ */
+function os_setPresetParam(text, identifier, value) {
+  if (!text) {
+    return null;
+  }
+  // Plain string search: a regular expression with lookahead takes seconds in
+  // ExtendScript on a preset of a few kilobytes.
+  var at = text.indexOf('<ParamIdentifier>' + identifier + '</ParamIdentifier>');
+  if (at < 0) {
+    return null;
+  }
+  var blockStart = Math.max(text.lastIndexOf('<ExporterParam ', at), text.lastIndexOf('<ExporterParam>', at));
+  var blockEnd = text.indexOf('</ExporterParam>', at);
+  if (blockStart < 0 || blockEnd < 0) {
+    return null;
+  }
+  var open = text.indexOf('<ParamValue>', at);
+  if (open < 0 || open > blockEnd) {
+    open = text.indexOf('<ParamValue>', blockStart);
+  }
+  if (open < 0 || open > blockEnd) {
+    return null;
+  }
+  var valueStart = open + '<ParamValue>'.length;
+  var close = text.indexOf('</ParamValue>', valueStart);
+  if (close < 0 || close > blockEnd) {
+    return null;
+  }
+  return text.substring(0, valueStart) + value + text.substring(close);
+}
+
+/**
+ * Export preset for the analysis render: Premiere's own WAV preset rewritten
+ * to mono, 32 bit float, at the sample rate of the sequence, in a temporary
+ * file. No resampling filter touches the mix; the engine measures it at 16 kHz
+ * by keeping every n-th sample. Null when no WAV preset exists.
+ */
+function os_analysisPreset(rate) {
+  var system = os_wavePreset();
+  if (!system) {
+    return null;
+  }
+  try {
+    var source = new File(system);
+    source.encoding = 'UTF-8';
+    if (!source.open('r')) {
+      return null;
+    }
+    var text = source.read();
+    source.close();
+    var rewritten = os_setPresetParam(text, 'ADBEAudioNumChannels', String(OS_ANALYSIS_CHANNELS));
+    if (!rewritten) {
+      return null;
+    }
+    // Without a readable rate, or without these parameters, the preset keeps
+    // its own values; the engine reads 16, 24 and 32 bit at any rate.
+    var withRate = rate ? os_setPresetParam(rewritten, 'ADBEAudioRatePerSecond', String(rate)) : null;
+    if (withRate) {
+      rewritten = withRate;
+    }
+    var withType = os_setPresetParam(rewritten, 'ADBEAudioSampleType', String(OS_ANALYSIS_SAMPLE_TYPE));
+    if (withType) {
+      rewritten = withType;
+    }
+    var target = new File(Folder.temp.fsName + '/open-silences-analysis-mono.epr');
+    target.encoding = 'UTF-8';
+    if (!target.open('w')) {
+      return null;
+    }
+    target.write(rewritten);
+    target.close();
+    return target.fsName;
+  } catch (error) {
+    return null;
+  }
+}
+
+/** Undo step for a mute state this call changed. */
+function os_muteRestorer(track, muted) {
+  return function () {
+    track.setMute(muted ? 1 : 0);
+  };
+}
+
+/**
+ * Render the chosen audio tracks of the active sequence. The other audio
+ * tracks are muted for the export and restored afterwards, also after a
+ * failure, so no copy of the sequence is needed. The render is mono 32 bit
+ * float at the sequence rate; when Premiere refuses that preset its own 48 kHz
+ * preset renders instead.
+ */
+function OS_renderAudio(payloadJson, itemFingerprint, stateFingerprint) {
   var original = app.project.activeSequence;
+  var restore = [];
   try {
     var payload = JSON.parse(payloadJson);
+    var expectedItems = itemFingerprint || payload.expectedItemFingerprint;
+    var expectedState = stateFingerprint || payload.expectedStateFingerprint;
     if (!original || os_identity(original) !== payload.expectedIdentity ||
-        os_itemEnvelope(original) !== payload.expectedItemFingerprint ||
-        OS_readSequence() !== payload.expectedStateFingerprint) {
+        (expectedItems && os_itemEnvelope(original) !== expectedItems) ||
+        (expectedState && OS_readSequence() !== expectedState)) {
       return os_fail('The sequence changed before the audio export.');
     }
-    var preset = os_wavePreset();
-    if (!preset) return os_fail('The bundled WAV preset was not found.');
+    var fallback = os_wavePreset();
+    if (!fallback) return os_fail('The WAV preset of Premiere was not found.');
     var output = new File(payload.outputPath);
     if (output.exists || !output.parent.exists || !/\.wav$/i.test(output.fsName)) {
       return os_fail('The audio export needs a new WAV file in an existing folder.');
@@ -1753,33 +2420,45 @@ function OS_renderAudio(payloadJson) {
       if (ref.kind !== 'audio' || ref.index < 0 || ref.index >= original.audioTracks.numTracks || selected[ref.index]) {
         return os_fail('The chosen analysis tracks are invalid.');
       }
-      var state = os_trackState(original, qe.project.getActiveSequence(), 'audio', ref.index);
-      if (state.locked !== false || state.muted !== false) return os_fail('An analysis track is locked or muted.');
+      var chosen = original.audioTracks[ref.index];
+      if (os_flag(function () { return chosen.isLocked(); }) !== false || os_flag(function () { return chosen.isMuted(); }) !== false) {
+        return os_fail('An analysis track is locked or muted.');
+      }
       selected[ref.index] = true; count++;
     }
     if (!count) return os_fail('No audio track chosen for the export.');
-    var clone = JSON.parse(OS_cloneSequence(payload.expectedIdentity, payload.expectedItemFingerprint));
-    if (!clone.ok) return os_fail(clone.error);
-    var copy = app.project.activeSequence;
-    copy.name = String(original.name) + ' - Open Silences Analysis';
-    var analysisBin = os_pluginBin('Open Silences Analysis');
-    if (!analysisBin) return os_fail('The analysis bin could not be created.');
-    copy.projectItem.moveBin(analysisBin);
-    for (var t = 0; t < copy.audioTracks.numTracks; t++) {
-      copy.audioTracks[t].setMute(selected[t] ? 0 : 1);
-      if (Boolean(copy.audioTracks[t].isMuted()) !== !selected[t]) {
-        return os_fail('The audio tracks of the analysis copy could not be isolated.');
+    for (var t = 0; t < original.audioTracks.numTracks; t++) {
+      var track = original.audioTracks[t];
+      var muted = Boolean(track.isMuted());
+      var wanted = !selected[t];
+      if (muted === wanted) continue;
+      track.setMute(wanted ? 1 : 0);
+      restore.push(os_muteRestorer(track, muted));
+      if (Boolean(track.isMuted()) !== wanted) {
+        return os_fail('The audio tracks could not be isolated for the export.');
       }
     }
     var started = new Date().getTime();
-    var status = copy.exportAsMediaDirect(output.fsName, preset, 0);
+    var preset = os_analysisPreset(os_sequenceAudioRate(original));
+    var status = preset ? original.exportAsMediaDirect(output.fsName, preset, 0) : false;
     output = new File(payload.outputPath);
+    var mono = Boolean(preset) && output.exists && output.length >= 44;
+    if (!mono) {
+      // Premiere refused the rewritten preset: its own 48 kHz preset renders instead.
+      output = new File(String(payload.outputPath).replace(/\.wav$/i, '-48k.wav'));
+      if (output.exists) return os_fail('The fallback audio file already exists.');
+      status = original.exportAsMediaDirect(output.fsName, fallback, 0);
+      output = new File(output.fsName);
+    }
     if (!output.exists || output.length < 44) return os_fail('Premiere did not export a valid audio file: ' + String(status));
-    if (os_itemEnvelope(original) !== payload.expectedItemFingerprint) return os_fail('The original changed during the export.');
-    return os_json({ok:true, mediaPath:output.fsName, analysisTracks:payload.analysisTracks,
-      renderMilliseconds:new Date().getTime()-started, analysisSequenceId:copy.sequenceID, bytes:output.length});
+    return os_json({ok:true, mediaPath:output.fsName, analysisTracks:payload.analysisTracks, mono:mono,
+      renderMilliseconds:new Date().getTime()-started, bytes:output.length});
   } catch (error) { return os_fail('Audio export failed: ' + String(error)); }
-  finally { if (original) app.project.openSequence(original.sequenceID); }
+  finally {
+    for (var undo = restore.length - 1; undo >= 0; undo--) {
+      try { restore[undo](); } catch (restoreError) { /* The next read shows the state. */ }
+    }
+  }
 }
 
 /** Prove razor partitioning before deleting anything. No source-time guessing. */
